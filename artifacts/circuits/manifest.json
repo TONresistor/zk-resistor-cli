@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "ceremony": "phase2-drand-beacon-round-6266966",
+  "artifacts": {
+    "hasherWasm": {
+      "file": "hasher.wasm",
+      "bytes": 964886,
+      "sha256": "aa1e8cefe460c257846cb10dd3866bc43710b302ce75b629edc0b1e9f891f63e"
+    },
+    "insertWasm": {
+      "file": "insert.wasm",
+      "bytes": 1094171,
+      "sha256": "f8e1498459a4ab3736ab74b5256b30ad073bea18ee68c2a59f2a8d2f7533f222"
+    },
+    "insertZkey": {
+      "file": "insert_final.zkey",
+      "bytes": 16061857,
+      "sha256": "5ef0a354249e224dc52d72bd332391503d0a63878fb6b1485ca729e040ae59ef"
+    },
+    "withdrawWasm": {
+      "file": "withdraw.wasm",
+      "bytes": 1050960,
+      "sha256": "f268629f83d7292c7c872a1a9e6fd7823db61b74573167eb9a099882e74179fa"
+    },
+    "withdrawZkey": {
+      "file": "withdraw_final.zkey",
+      "bytes": 9141573,
+      "sha256": "60b22adfc56e3c8268484213ea34cb29492645decc41bd0d5632762de39949ff"
+    }
+  }
+}

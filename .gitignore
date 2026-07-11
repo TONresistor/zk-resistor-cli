@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+.env
+.env.local
+coverage/
+.vscode/
+.idea/
+.obsidian/
+*.tsbuildinfo
+
+# One-shot local receipts for the completed 2026-07-10 shadow lifecycles.
+scripts/shadow-*-lifecycle.ts
