@@ -132,6 +132,7 @@ export default defineCommand({
       value: result.message.value,
       payload: result.message.payload,
       note: result.noteString,
+      journalSecret: loaded.keyPair.secretKey,
       send: () => sendOne(ton, loaded, {
         to: result.message.address,
         value: result.message.value,

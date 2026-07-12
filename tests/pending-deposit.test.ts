@@ -1,6 +1,7 @@
 import { beginCell } from "@ton/core";
 import {
   mkdtemp,
+  mkdir,
   readFile,
   readdir,
   stat,
@@ -15,8 +16,10 @@ import {
   pendingDepositErrorPayload,
   pendingDepositJournalPath,
   pendingDepositPayloadHash,
+  readPendingDepositJournal,
+  recoverPendingDepositJournals,
   submitPendingDeposit,
-  type PendingDepositJournalV1,
+  type PendingDepositJournalV2,
   type PendingDepositJournalStore,
 } from "../src/lib/pending-deposit.js";
 
@@ -24,13 +27,18 @@ const NOTE = "zkresistor:do-not-put-this-secret-in-a-file-name";
 const POOL = `EQ${"a".repeat(46)}`;
 const WALLET = `UQ${"b".repeat(46)}`;
 const TARGET = `EQ${"c".repeat(46)}`;
+const JOURNAL_SECRET = Buffer.alloc(64, 0x42);
+
+function submit(options: Parameters<typeof submitPendingDeposit>[0]) {
+  return submitPendingDeposit({ journalSecret: JOURNAL_SECRET, ...options });
+}
 
 function payload() {
   return beginCell().storeUint(0x00de9052, 32).storeUint(123n, 256).endCell();
 }
 
-async function readJournal(path: string): Promise<PendingDepositJournalV1> {
-  return JSON.parse(await readFile(path, "utf8")) as PendingDepositJournalV1;
+async function readJournal(path: string): Promise<PendingDepositJournalV2> {
+  return JSON.parse(await readFile(path, "utf8")) as PendingDepositJournalV2;
 }
 
 describe("pending deposit journal", () => {
@@ -46,7 +54,7 @@ describe("pending deposit journal", () => {
     ];
     const observed: string[] = [];
 
-    const result = await submitPendingDeposit({
+    const result = await submit({
       network: "mainnet",
       pool: POOL,
       wallet: WALLET,
@@ -60,7 +68,9 @@ describe("pending deposit journal", () => {
       send: async () => {
         const duringSend = await readJournal(expectedPath);
         observed.push(duringSend.phase);
-        expect(duringSend.note).toBe(NOTE);
+        expect(duringSend.schemaVersion).toBe(2);
+        expect(JSON.stringify(duringSend)).not.toContain(NOTE);
+        expect((await readPendingDepositJournal(expectedPath, JOURNAL_SECRET)).note).toBe(NOTE);
         expect(duringSend.timestamps).toEqual({
           preparedAt: "2026-07-10T10:00:00.000Z",
           submittedAt: null,
@@ -71,8 +81,8 @@ describe("pending deposit journal", () => {
     expect(observed).toEqual(["prepared"]);
     expect(result).toEqual({ journalPath: expectedPath, payloadHash });
     const final = await readJournal(expectedPath);
-    expect(final).toEqual({
-      schemaVersion: 1,
+    expect(final).toMatchObject({
+      schemaVersion: 2,
       network: "mainnet",
       pool: POOL,
       wallet: WALLET,
@@ -80,12 +90,26 @@ describe("pending deposit journal", () => {
       target: TARGET,
       value: "10350000000",
       payloadHash,
-      note: NOTE,
       timestamps: {
         preparedAt: "2026-07-10T10:00:00.000Z",
         submittedAt: "2026-07-10T10:00:01.000Z",
       },
       phase: "submitted",
+    });
+    expect(JSON.stringify(final)).not.toContain(NOTE);
+    await expect(readPendingDepositJournal(expectedPath, Buffer.alloc(64, 1)))
+      .rejects.toThrow("journal decryption failed");
+    expect((await readPendingDepositJournal(expectedPath, JOURNAL_SECRET)).note).toBe(NOTE);
+    expect(await recoverPendingDepositJournals({
+      wallet: WALLET,
+      journalSecret: JOURNAL_SECRET,
+      rootDir,
+    })).toMatchObject({
+      journals: [{
+        path: expectedPath,
+        entry: { note: NOTE, phase: "submitted" },
+      }],
+      warnings: [],
     });
 
     expect((await stat(rootDir)).mode & 0o777).toBe(0o700);
@@ -95,13 +119,75 @@ describe("pending deposit journal", () => {
     expect(basename(expectedPath)).not.toContain("do-not-put-this-secret");
   });
 
+  it("recovers legacy plaintext journals without writing new plaintext notes", async () => {
+    const rootDir = join(await mkdtemp(join(tmpdir(), "zkr-pending-legacy-")), "pending-deposits");
+    const networkDir = join(rootDir, "mainnet");
+    await mkdir(networkDir, { recursive: true });
+    const payloadHash = "a".repeat(64);
+    const path = pendingDepositJournalPath(rootDir, "mainnet", payloadHash);
+    await writeFile(path, JSON.stringify({
+      schemaVersion: 1,
+      network: "mainnet",
+      pool: POOL,
+      wallet: WALLET,
+      expectedLeafIndex: 1,
+      target: TARGET,
+      value: "1",
+      payloadHash,
+      note: NOTE,
+      timestamps: {
+        preparedAt: "2026-07-10T10:00:00.000Z",
+        submittedAt: "2026-07-10T10:00:01.000Z",
+      },
+      phase: "submitted",
+    }));
+    expect(await recoverPendingDepositJournals({
+      wallet: WALLET,
+      journalSecret: JOURNAL_SECRET,
+      rootDir,
+    })).toMatchObject({ journals: [{ entry: { note: NOTE, schemaVersion: 1 } }], warnings: [] });
+    const migrated = await readFile(path, "utf8");
+    expect(migrated).not.toContain(NOTE);
+    expect(JSON.parse(migrated)).toMatchObject({ schemaVersion: 2, wallet: WALLET });
+  });
+
+  it("recovers valid notes even when another journal is corrupted", async () => {
+    const rootDir = join(await mkdtemp(join(tmpdir(), "zkr-pending-corrupt-")), "pending-deposits");
+    const body = payload();
+    await submit({
+      network: "mainnet",
+      pool: POOL,
+      wallet: WALLET,
+      expectedLeafIndex: 1,
+      target: TARGET,
+      value: 1n,
+      payload: body,
+      note: NOTE,
+      rootDir,
+      send: async () => {},
+    });
+    const corruptPath = join(rootDir, "mainnet", `${"b".repeat(64)}.json`);
+    await writeFile(corruptPath, "not json", "utf8");
+    const recovered = await recoverPendingDepositJournals({
+      wallet: WALLET,
+      journalSecret: JOURNAL_SECRET,
+      rootDir,
+    });
+    expect(recovered.journals).toHaveLength(1);
+    expect(recovered.journals[0]?.entry.note).toBe(NOTE);
+    expect(recovered.warnings).toEqual([{
+      path: corruptPath,
+      message: "Journal metadata is invalid.",
+    }]);
+  });
+
   it("never calls send when the prepared journal cannot be created", async () => {
     const parent = await mkdtemp(join(tmpdir(), "zkr-pending-blocked-"));
     const rootDir = join(parent, "not-a-directory");
     await writeFile(rootDir, "blocked", "utf8");
     const send = vi.fn(async () => {});
 
-    const promise = submitPendingDeposit({
+    const promise = submit({
       network: "testnet",
       pool: POOL,
       wallet: WALLET,
@@ -128,7 +214,7 @@ describe("pending deposit journal", () => {
     const rootDir = join(parent, "pending-deposits");
     let failure: PendingDepositError | undefined;
     try {
-      await submitPendingDeposit({
+      await submit({
         network: "mainnet",
         pool: POOL,
         wallet: WALLET,
@@ -191,7 +277,7 @@ describe("pending deposit journal", () => {
     const parent = await mkdtemp(join(tmpdir(), "zkr-pending-repeat-"));
     const rootDir = join(parent, "pending-deposits");
     const body = payload();
-    await submitPendingDeposit({
+    await submit({
       network: "mainnet",
       pool: POOL,
       wallet: WALLET,
@@ -204,7 +290,7 @@ describe("pending deposit journal", () => {
       send: async () => {},
     });
     const secondSend = vi.fn(async () => {});
-    await expect(submitPendingDeposit({
+    await expect(submit({
       network: "mainnet",
       pool: POOL,
       wallet: WALLET,
@@ -241,8 +327,8 @@ describe("pending deposit journal", () => {
     };
 
     const results = await Promise.allSettled([
-      submitPendingDeposit(options),
-      submitPendingDeposit(options),
+      submit(options),
+      submit(options),
     ]);
 
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
@@ -263,7 +349,7 @@ describe("pending deposit journal", () => {
       },
     };
 
-    await expect(submitPendingDeposit({
+    await expect(submit({
       network: "mainnet",
       pool: POOL,
       wallet: WALLET,

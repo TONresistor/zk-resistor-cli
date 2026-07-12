@@ -1,10 +1,17 @@
-import { randomUUID } from "node:crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  hkdfSync,
+  randomBytes,
+  randomUUID,
+} from "node:crypto";
 import {
   chmod,
   link,
   mkdir,
   open,
   readFile,
+  readdir,
   rename,
   rm,
   unlink,
@@ -34,6 +41,18 @@ export interface PendingDepositJournalV1 {
   phase: PendingDepositPhase;
 }
 
+export interface PendingDepositJournalV2 extends Omit<PendingDepositJournalV1, "schemaVersion" | "note"> {
+  schemaVersion: 2;
+  encryptedNote: {
+    cipher: "aes-256-gcm";
+    ivBase64: string;
+    ciphertextBase64: string;
+    authTagBase64: string;
+  };
+}
+
+type StoredPendingDepositJournal = PendingDepositJournalV1 | PendingDepositJournalV2;
+
 export interface PendingDepositJournalStore {
   prepare(entry: PendingDepositJournalV1): Promise<string>;
   markSubmitted(path: string, submittedAt: string): Promise<void>;
@@ -48,6 +67,8 @@ export interface SubmitPendingDepositOptions {
   value: bigint;
   payload: Cell;
   note: string;
+  /** Wallet secret material used only to encrypt the durable note journal. */
+  journalSecret?: Uint8Array;
   send(): Promise<void>;
   /** Full pending-deposits directory. Defaults to ~/.config/zkresistor/pending-deposits. */
   rootDir?: string;
@@ -149,7 +170,14 @@ export function pendingDepositJournalPath(
 }
 
 export class FilePendingDepositJournalStore implements PendingDepositJournalStore {
-  constructor(private readonly rootDir = pendingDepositsRoot()) {}
+  constructor(
+    private readonly rootDir = pendingDepositsRoot(),
+    private readonly journalSecret: Uint8Array,
+  ) {
+    if (journalSecret.byteLength < 32) {
+      throw new Error("pending deposit journal encryption secret is invalid");
+    }
+  }
 
   async prepare(entry: PendingDepositJournalV1): Promise<string> {
     validateEntry(entry);
@@ -165,14 +193,14 @@ export class FilePendingDepositJournalStore implements PendingDepositJournalStor
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    await atomicWriteJson(networkDir, destination, entry, false);
+    await atomicWriteJson(networkDir, destination, encryptEntry(entry, this.journalSecret), false);
     return destination;
   }
 
   async markSubmitted(path: string, submittedAt: string): Promise<void> {
-    const existing = parseEntry(await readFile(path, "utf8"));
+    const existing = parseStoredEntry(await readFile(path, "utf8"));
     if (existing.phase === "submitted") return;
-    const updated: PendingDepositJournalV1 = {
+    const updated: StoredPendingDepositJournal = {
       ...existing,
       timestamps: {
         ...existing.timestamps,
@@ -200,7 +228,10 @@ export async function submitPendingDeposit(
   const payloadHash = pendingDepositPayloadHash(options.payload);
   const rootDir = options.rootDir ?? pendingDepositsRoot();
   const journalPath = pendingDepositJournalPath(rootDir, options.network, payloadHash);
-  const store = options.store ?? new FilePendingDepositJournalStore(rootDir);
+  const store = options.store ?? new FilePendingDepositJournalStore(
+    rootDir,
+    options.journalSecret ?? new Uint8Array(),
+  );
   const now = options.now ?? (() => new Date());
   const preparedAt = now().toISOString();
   const entry: PendingDepositJournalV1 = {
@@ -263,7 +294,7 @@ export async function submitPendingDeposit(
 async function atomicWriteJson(
   directory: string,
   destination: string,
-  value: PendingDepositJournalV1,
+  value: StoredPendingDepositJournal,
   overwrite: boolean,
 ): Promise<void> {
   const temporary = join(directory, `.pending-deposit-${randomUUID()}.tmp`);
@@ -301,10 +332,226 @@ async function syncDirectory(path: string): Promise<void> {
   }
 }
 
-function parseEntry(serialized: string): PendingDepositJournalV1 {
+export async function readPendingDepositJournal(
+  path: string,
+  journalSecret: Uint8Array,
+): Promise<PendingDepositJournalV1> {
+  const stored = parseStoredEntry(await readFile(path, "utf8"));
+  return decryptStoredEntry(stored, journalSecret);
+}
+
+function decryptStoredEntry(
+  stored: StoredPendingDepositJournal,
+  journalSecret: Uint8Array,
+): PendingDepositJournalV1 {
+  if (stored.schemaVersion === 1) return stored;
+  const decipher = createDecipheriv(
+    "aes-256-gcm",
+    journalEncryptionKey(journalSecret),
+    decodeFixedBase64(stored.encryptedNote.ivBase64, 12, "journal IV"),
+  );
+  decipher.setAAD(journalAad(stored));
+  decipher.setAuthTag(decodeFixedBase64(stored.encryptedNote.authTagBase64, 16, "journal auth tag"));
+  let note: string;
+  try {
+    note = Buffer.concat([
+      decipher.update(Buffer.from(stored.encryptedNote.ciphertextBase64, "base64")),
+      decipher.final(),
+    ]).toString("utf8");
+  } catch {
+    throw new Error("pending deposit journal decryption failed");
+  }
+  const { encryptedNote, ...metadata } = stored;
+  void encryptedNote;
+  const entry: PendingDepositJournalV1 = {
+    ...metadata,
+    schemaVersion: 1,
+    note,
+  };
+  validateEntry(entry);
+  return entry;
+}
+
+export async function recoverPendingDepositJournals(options: {
+  wallet: string;
+  journalSecret: Uint8Array;
+  rootDir?: string;
+}): Promise<{
+  journals: Array<{ path: string; entry: PendingDepositJournalV1 }>;
+  warnings: Array<{ path: string; message: string }>;
+}> {
+  const rootDir = options.rootDir ?? pendingDepositsRoot();
+  const recovered: Array<{ path: string; entry: PendingDepositJournalV1 }> = [];
+  const warnings: Array<{ path: string; message: string }> = [];
+  for (const network of ["mainnet", "testnet"] as const) {
+    const directory = join(rootDir, network);
+    let names: string[];
+    try {
+      names = await readdir(directory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    for (const name of names.filter((value) => /^[0-9a-f]{64}\.json$/.test(value)).sort()) {
+      const path = join(directory, name);
+      let stored: StoredPendingDepositJournal;
+      try {
+        const input = JSON.parse(await readFile(path, "utf8")) as unknown;
+        if (
+          typeof input === "object" &&
+          input !== null &&
+          typeof (input as { wallet?: unknown }).wallet === "string" &&
+          (input as { wallet: string }).wallet !== options.wallet
+        ) continue;
+        validateStoredEntry(input);
+        stored = input;
+      } catch {
+        warnings.push({ path, message: "Journal metadata is invalid." });
+        continue;
+      }
+      let entry: PendingDepositJournalV1;
+      try {
+        entry = decryptStoredEntry(stored, options.journalSecret);
+      } catch {
+        warnings.push({ path, message: "Journal decryption failed." });
+        continue;
+      }
+      recovered.push({ path, entry });
+      if (stored.schemaVersion === 1) {
+        try {
+          await atomicWriteJson(directory, path, encryptEntry(entry, options.journalSecret), true);
+        } catch {
+          warnings.push({ path, message: "Legacy journal could not be re-encrypted." });
+        }
+      }
+    }
+  }
+  return {
+    journals: recovered.sort((left, right) =>
+      left.entry.timestamps.preparedAt.localeCompare(right.entry.timestamps.preparedAt)),
+    warnings,
+  };
+}
+
+function parseStoredEntry(serialized: string): StoredPendingDepositJournal {
   const parsed = JSON.parse(serialized) as unknown;
-  validateEntry(parsed);
+  validateStoredEntry(parsed);
   return parsed;
+}
+
+function encryptEntry(
+  entry: PendingDepositJournalV1,
+  journalSecret: Uint8Array,
+): PendingDepositJournalV2 {
+  validateEntry(entry);
+  const iv = randomBytes(12);
+  const encrypted: PendingDepositJournalV2 = {
+    schemaVersion: 2,
+    network: entry.network,
+    pool: entry.pool,
+    wallet: entry.wallet,
+    expectedLeafIndex: entry.expectedLeafIndex,
+    target: entry.target,
+    value: entry.value,
+    payloadHash: entry.payloadHash,
+    timestamps: entry.timestamps,
+    phase: entry.phase,
+    encryptedNote: {
+      cipher: "aes-256-gcm",
+      ivBase64: iv.toString("base64"),
+      ciphertextBase64: "",
+      authTagBase64: "",
+    },
+  };
+  const cipher = createCipheriv("aes-256-gcm", journalEncryptionKey(journalSecret), iv);
+  cipher.setAAD(journalAad(encrypted));
+  encrypted.encryptedNote.ciphertextBase64 = Buffer.concat([
+    cipher.update(entry.note, "utf8"),
+    cipher.final(),
+  ]).toString("base64");
+  encrypted.encryptedNote.authTagBase64 = cipher.getAuthTag().toString("base64");
+  return encrypted;
+}
+
+function journalEncryptionKey(secret: Uint8Array): Buffer {
+  if (secret.byteLength < 32) throw new Error("pending deposit journal encryption secret is invalid");
+  return Buffer.from(hkdfSync(
+    "sha256",
+    secret,
+    Buffer.from("zkresistor-cli", "utf8"),
+    Buffer.from("pending-deposit-journal-v2", "utf8"),
+    32,
+  ));
+}
+
+function journalAad(entry: Omit<PendingDepositJournalV2, "encryptedNote">): Buffer {
+  return Buffer.from(JSON.stringify({
+    schemaVersion: 2,
+    network: entry.network,
+    pool: entry.pool,
+    wallet: entry.wallet,
+    expectedLeafIndex: entry.expectedLeafIndex,
+    target: entry.target,
+    value: entry.value,
+    payloadHash: entry.payloadHash,
+  }), "utf8");
+}
+
+function validateStoredEntry(value: unknown): asserts value is StoredPendingDepositJournal {
+  if (typeof value !== "object" || value === null) {
+    throw new Error("pending deposit journal is not an object");
+  }
+  if ((value as { schemaVersion?: unknown }).schemaVersion === 1) {
+    validateEntry(value);
+    return;
+  }
+  const entry = value as Partial<PendingDepositJournalV2>;
+  if (
+    entry.schemaVersion !== 2 ||
+    (entry.network !== "mainnet" && entry.network !== "testnet") ||
+    typeof entry.pool !== "string" ||
+    typeof entry.wallet !== "string" ||
+    !Number.isSafeInteger(entry.expectedLeafIndex) ||
+    (entry.expectedLeafIndex ?? -1) < 0 ||
+    typeof entry.target !== "string" ||
+    typeof entry.value !== "string" ||
+    !/^\d+$/.test(entry.value) ||
+    typeof entry.payloadHash !== "string" ||
+    (entry.phase !== "prepared" && entry.phase !== "submitted") ||
+    typeof entry.timestamps !== "object" ||
+    entry.timestamps === null ||
+    typeof entry.timestamps.preparedAt !== "string" ||
+    !Number.isFinite(Date.parse(entry.timestamps.preparedAt)) ||
+    (entry.timestamps.submittedAt !== null &&
+      (typeof entry.timestamps.submittedAt !== "string" ||
+        !Number.isFinite(Date.parse(entry.timestamps.submittedAt)))) ||
+    typeof entry.encryptedNote !== "object" ||
+    entry.encryptedNote === null ||
+    entry.encryptedNote.cipher !== "aes-256-gcm" ||
+    typeof entry.encryptedNote.ciphertextBase64 !== "string"
+  ) {
+    throw new Error("pending deposit journal does not match schema v2");
+  }
+  assertPayloadHash(entry.payloadHash);
+  decodeFixedBase64(entry.encryptedNote.ivBase64, 12, "journal IV");
+  decodeFixedBase64(entry.encryptedNote.authTagBase64, 16, "journal auth tag");
+  if (entry.phase === "prepared" && entry.timestamps.submittedAt !== null) {
+    throw new Error("prepared pending deposit journal has a submitted timestamp");
+  }
+  if (entry.phase === "submitted" && entry.timestamps.submittedAt === null) {
+    throw new Error("submitted pending deposit journal has no submitted timestamp");
+  }
+}
+
+function decodeFixedBase64(value: unknown, bytes: number, label: string): Buffer {
+  if (typeof value !== "string" || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
+    throw new Error(`${label} is invalid`);
+  }
+  const decoded = Buffer.from(value, "base64");
+  if (decoded.byteLength !== bytes || decoded.toString("base64") !== value) {
+    throw new Error(`${label} is invalid`);
+  }
+  return decoded;
 }
 
 function validateEntry(value: unknown): asserts value is PendingDepositJournalV1 {

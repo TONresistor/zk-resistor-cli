@@ -7,6 +7,7 @@
  *   zkr pools   · list / info
  *   zkr pool    · create / create-ton / activate
  *   zkr deposit
+ *   zkr deposits · recover
  *   zkr withdraw
  *   zkr mcp     · serve
  */
@@ -16,6 +17,7 @@ import wallet from "./commands/wallet/index.js";
 import pools from "./commands/pools/index.js";
 import pool from "./commands/pool/index.js";
 import deposit from "./commands/deposit.js";
+import deposits from "./commands/deposits/index.js";
 import withdraw from "./commands/withdraw.js";
 import mcp from "./commands/mcp/index.js";
 import { emitError } from "./lib/output.js";
@@ -34,6 +36,7 @@ const main = defineCommand({
     pools,
     pool,
     deposit,
+    deposits,
     withdraw,
     mcp,
   },

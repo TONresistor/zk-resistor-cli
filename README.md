@@ -28,6 +28,7 @@ EQD3rhFaCusU0715MZonDNj8GuHeA17KygIXkBLkalpkBjle
 zkr wallet new --name main
 zkr pools list
 zkr deposit --pool EQ_pool --wallet main
+zkr deposits recover --wallet main
 zkr withdraw --note 'zkresistor:...' --to EQ_recipient --wallet main
 ```
 
@@ -45,8 +46,9 @@ Use `--json` for structured output and `--yes` to skip write confirmations.
 ## Security
 
 - A deposit note is the only way to withdraw. Store it before broadcasting.
-- Notes and payloads are journaled under
-  `~/.config/zkresistor/pending-deposits/` before a deposit send.
+- Notes and deposit metadata are journaled under
+  `~/.config/zkresistor/pending-deposits/` before a deposit send. New journals
+  encrypt the note with the local wallet; recover it with `zkr deposits recover`.
 - Wallet mnemonics are encrypted locally with AES-256-GCM and scrypt.
 - Verified pool state is stored under `~/.config/zkresistor/state/`.
 - Withdrawals bind the complete recipient address and reject incompatible pool
