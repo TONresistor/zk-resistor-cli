@@ -1,11 +1,11 @@
 import { defineCommand } from "citty";
-import * as p from "@clack/prompts";
-import { promises as fs } from "node:fs";
+import * as p from "../../lib/prompts.js";
 import { ui, colors } from "../../lib/ui.js";
 import { emit } from "../../lib/output.js";
 import { CliError } from "../../lib/errors.js";
 import { outputArgs, yesArg } from "../../lib/args.js";
 import { decryptKeystore, readKeystore } from "../../lib/keystore.js";
+import { resolvePassphrase } from "../../lib/input.js";
 
 export default defineCommand({
   meta: {
@@ -40,6 +40,7 @@ export default defineCommand({
     const passphrase = await resolvePassphrase({
       file: args["passphrase-file"],
       promptIfMissing: !args.json,
+      message: "Passphrase",
     });
 
     const mnemonic = await decryptKeystore(ks, passphrase);
@@ -61,28 +62,3 @@ export default defineCommand({
     );
   },
 });
-
-async function resolvePassphrase(opts: {
-  file?: string;
-  promptIfMissing: boolean;
-}): Promise<string> {
-  if (opts.file) {
-    const raw = await fs.readFile(opts.file, "utf8").catch(() => {
-      throw new CliError(`Passphrase file not readable: ${opts.file}`, { code: "INVALID_ARG" });
-    });
-    return raw.split(/\r?\n/)[0] ?? "";
-  }
-  if (process.env.ZKR_PASSPHRASE) return process.env.ZKR_PASSPHRASE;
-  if (!opts.promptIfMissing) {
-    throw new CliError("Passphrase required.", {
-      code: "INVALID_ARG",
-      hint: "Set ZKR_PASSPHRASE env var or use --passphrase-file.",
-    });
-  }
-  const v = await p.password({
-    message: "Passphrase",
-    validate: (s) => (s.length === 0 ? "Cannot be empty." : undefined),
-  });
-  if (p.isCancel(v)) throw new CliError("Cancelled.", { code: "CANCELLED" });
-  return v;
-}

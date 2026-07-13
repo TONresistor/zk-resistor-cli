@@ -1,15 +1,3 @@
-/**
- * CLI error model.
- *
- * Throw a `CliError` to abort a command with a human message + suggested
- * remediation. The top-level handler in `index.ts` formats and exits with
- * the right code (pretty to stderr, or structured JSON to stdout under
- * `--json`).
- *
- * Use `code` from the catalog below so callers (agents, scripts) can branch
- * on the error class without parsing the message.
- */
-
 export type ErrorCode =
   | "CLI_ERROR"
   | "INVALID_ARG"
@@ -21,7 +9,6 @@ export type ErrorCode =
   | "INVALID_NOTE"
   | "INVALID_ADDRESS"
   | "POOL_NOT_FOUND"
-  | "POOL_AMBIGUOUS"
   | "POOL_ALREADY_EXISTS"
   | "POOL_CREATION_PENDING"
   | "INSUFFICIENT_BALANCE"
@@ -55,8 +42,4 @@ export class CliError extends Error {
     if (opts.hint !== undefined) this.hint = opts.hint;
     if (opts.details !== undefined) this.details = opts.details;
   }
-}
-
-export function isCliError(e: unknown): e is CliError {
-  return e instanceof CliError;
 }

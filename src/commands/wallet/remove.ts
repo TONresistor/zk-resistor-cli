@@ -1,5 +1,5 @@
 import { defineCommand } from "citty";
-import * as p from "@clack/prompts";
+import * as p from "../../lib/prompts.js";
 import { ui, colors } from "../../lib/ui.js";
 import { emit } from "../../lib/output.js";
 import { CliError } from "../../lib/errors.js";

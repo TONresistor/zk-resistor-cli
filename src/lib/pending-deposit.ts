@@ -20,6 +20,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Cell } from "@ton/core";
 import { CliError } from "./errors.js";
+import { syncDirectory } from "./fs.js";
 import type { Network } from "./network.js";
 
 export type PendingDepositPhase = "prepared" | "submitted";
@@ -67,10 +68,8 @@ export interface SubmitPendingDepositOptions {
   value: bigint;
   payload: Cell;
   note: string;
-  /** Wallet secret material used only to encrypt the durable note journal. */
   journalSecret?: Uint8Array;
   send(): Promise<void>;
-  /** Full pending-deposits directory. Defaults to ~/.config/zkresistor/pending-deposits. */
   rootDir?: string;
   store?: PendingDepositJournalStore;
   now?: () => Date;
@@ -320,15 +319,6 @@ async function atomicWriteJson(
   } catch (error) {
     await rm(temporary, { force: true });
     throw error;
-  }
-}
-
-async function syncDirectory(path: string): Promise<void> {
-  const handle = await open(path, "r");
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
   }
 }
 

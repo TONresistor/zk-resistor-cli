@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: npm-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903
+        with:
+          node-version: "22.14.0"
+      - name: Install release npm
+        run: npm install --global npm@11.18.0
+      - name: Validate release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_tag="v$(node --print "require('./package.json').version")"
+          if [[ "$GITHUB_REF_NAME" != "$expected_tag" ]]; then
+            echo "Expected tag $expected_tag, received $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "Release commit is not on main" >&2
+            exit 1
+          fi
+      - run: npm ci
+      - name: Release checks
+        run: npm run check
+      - name: Smoke
+        run: ./scripts/smoke.sh
+      - name: Production dependency audit
+        run: npm audit --omit=dev
+      - name: Publish
+        shell: bash
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${NPM_TOKEN:-}" ]]; then
+            npm config set "//registry.npmjs.org/:_authToken" "$NPM_TOKEN"
+          fi
+          npm publish --access public --provenance --ignore-scripts

@@ -1,14 +1,3 @@
-/**
- * Output envelope — switches between human-pretty and JSON on `--json`.
- *
- * Matches the Acton CLI convention:
- *   { "success": true, ...payload }            // happy path
- *   { "success": false, "error": "CODE",       // error path
- *     "message": "...", "details": {...}, "hint": "..." }
- *
- * stdout is the result channel. stderr is for progress/log noise. Never mix.
- */
-
 import pc from "picocolors";
 import { CliError } from "./errors.js";
 
@@ -16,7 +5,6 @@ export type ColorMode = "auto" | "always" | "never";
 
 export interface EmitOpts {
   json?: boolean;
-  /** "auto" | "always" | "never". Other strings fall back to "auto". */
   color?: string;
 }
 
@@ -26,14 +14,6 @@ export function resolveColor(mode: string | undefined): boolean {
   return Boolean(process.stdout.isTTY) && process.env.NO_COLOR !== "1";
 }
 
-/**
- * Print the command's result.
- *
- * - `--json` → stringify the envelope to stdout, no decoration
- * - otherwise → invoke the `pretty` renderer
- *
- * The `pretty` callback may write to stdout with whatever formatting it wants.
- */
 export function emit<T extends Record<string, unknown>>(
   data: T,
   opts: EmitOpts,
@@ -46,12 +26,6 @@ export function emit<T extends Record<string, unknown>>(
   pretty(data);
 }
 
-/**
- * Print an error envelope. In JSON mode, write structured payload to stdout
- * (so callers can parse it). Otherwise, write to stderr.
- *
- * Returns the exit code to use.
- */
 export function emitError(err: unknown, opts: EmitOpts): number {
   const useJson = Boolean(opts.json);
   const useColor = !useJson && resolveColor(opts.color);
@@ -105,7 +79,6 @@ export function emitError(err: unknown, opts: EmitOpts): number {
   return 1;
 }
 
-/** Tag a side-channel progress message (stderr). Silent in JSON mode. */
 export function progress(msg: string, opts: EmitOpts): void {
   if (opts.json) return;
   const useColor = resolveColor(opts.color);
@@ -113,11 +86,6 @@ export function progress(msg: string, opts: EmitOpts): void {
   process.stderr.write(`  ${dot} ${msg}\n`);
 }
 
-/**
- * JSON.stringify replacer that turns bigint into string (numeric form, no quotes-in-quotes
- * confusion). All amounts in nanoTON / jetton-units fit in regular bigints but exceed
- * Number.MAX_SAFE_INTEGER for large denominations, so we always emit decimal strings.
- */
 function replacer(_key: string, value: unknown): unknown {
   if (typeof value === "bigint") return value.toString();
   return value;

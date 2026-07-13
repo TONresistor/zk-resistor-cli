@@ -32,6 +32,7 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Network } from "./network.js";
+import { syncDirectory } from "./fs.js";
 
 const ADDRESS_FORMAT = { urlSafe: true, bounceable: true } as const;
 const BIGINT_TAG = "$zkr_bigint";
@@ -271,19 +272,6 @@ async function writeAll(handle: Awaited<ReturnType<typeof open>>, chunk: Uint8Ar
   }
 }
 
-async function syncDirectory(path: string): Promise<void> {
-  const handle = await open(path, "r");
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-}
-
-/**
- * Atomic compact-snapshot plus O(delta) journal store for CLI restarts.
- * The provider itself remains the SDK's in-memory reference backend.
- */
 export class FileMerkleStateStore implements MerkleStateSnapshotStore {
   private readonly poolDir: string;
   private readonly journalDir: string;
@@ -337,7 +325,7 @@ export class FileMerkleStateStore implements MerkleStateSnapshotStore {
   }
 
   async appendVerifiedBatch(
-    poolAddress: string,
+    _poolAddress: string,
     batch: MerkleStateEventBatch,
     checkpoint: MerkleStateCheckpoint,
   ): Promise<void> {
@@ -364,8 +352,6 @@ export class FileMerkleStateStore implements MerkleStateSnapshotStore {
     }
     await handle.close();
     try {
-      // A hard link publishes the fully-written batch without overwriting an
-      // idempotent concurrent writer.
       await link(temporary, destination);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
@@ -455,9 +441,9 @@ function guardedProvider(
   track: <T>(operation: () => Promise<T>) => Promise<T>,
 ): MerkleStateProvider {
   const assertActive = () => {
-      if (!isActive()) {
-        throw new Error("verified state provider scope has already been released");
-      }
+    if (!isActive()) {
+      throw new Error("verified state provider scope has already been released");
+    }
   };
   return {
     get privacyMode() {
@@ -475,11 +461,6 @@ function guardedProvider(
   };
 }
 
-/**
- * Owns the per-network/pool lock for the complete load/sync/use/compact cycle.
- * The provider is invalidated before lock release and every started operation
- * is allowed to settle first, so callers cannot keep using its store later.
- */
 export async function withPersistentState<T>(
   options: PersistentStateOptions,
   operation: (state: PersistentState) => Promise<T>,

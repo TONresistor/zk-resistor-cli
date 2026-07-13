@@ -1,17 +1,3 @@
-/**
- * Strict JSON-only loader for non-secret defaults.
- *
- * Search order (highest first):
- *   1. CLI flags (passed through directly, not loaded here)
- *   2. process.env (ZKR_*)
- *   3. ./zkresistor.config.json
- *   4. ~/.config/zkresistor/config.json
- *   5. built-in defaults
- *
- * JavaScript and TypeScript config files are deliberately unsupported. Secrets
- * (mnemonics, passphrases and notes) NEVER live here; see `lib/keystore.ts`.
- */
-
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -20,30 +6,20 @@ import { fileURLToPath } from "node:url";
 import { CliError } from "./errors.js";
 
 export interface ZkrConfig {
-  /** Default network for commands that don't override. */
   network?: "mainnet" | "testnet";
-  /** Path to hasher.wasm. Defaults to contracts repo build layout or env override. */
   hasherWasm?: string;
-  /** Path to insert.wasm. */
   insertWasm?: string;
-  /** Path to insert_final.zkey. */
   insertZkey?: string;
-  /** Path to withdraw.wasm. */
   withdrawWasm?: string;
-  /** Path to withdraw_final.zkey. */
   withdrawZkey?: string;
-  /** Persistent verified Merkle state directory. */
   stateDir?: string;
 }
 
 export const CONFIG_DIR = join(homedir(), ".config", "zkresistor");
 
 export interface LoadZkrConfigOptions {
-  /** Test seam; production callers use process.cwd(). */
   projectDir?: string;
-  /** Test seam; production callers use CONFIG_DIR. */
   userConfigDir?: string;
-  /** Test seam; production callers use process.env. */
   env?: Readonly<Record<string, string | undefined>>;
 }
 

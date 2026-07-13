@@ -1,7 +1,6 @@
 import { defineCommand } from "citty";
-import * as p from "@clack/prompts";
-import { Address } from "@ton/core";
-import { ui, colors, fmtTon } from "../../lib/ui.js";
+import * as p from "../../lib/prompts.js";
+import { ui, colors } from "../../lib/ui.js";
 import { emit, progress } from "../../lib/output.js";
 import { CliError } from "../../lib/errors.js";
 import { outputArgs, networkArgs, walletArg, yesArg } from "../../lib/args.js";
@@ -9,11 +8,13 @@ import { resolveConfiguredNetwork } from "../../lib/network.js";
 import { makeSdkClient, makeTonClient } from "../../lib/client.js";
 import { sendOne, unlockWallet } from "../../lib/wallet.js";
 import { planJettonPoolCreation } from "../../lib/pool-creation.js";
+import { formatGram } from "../../lib/format.js";
+import { canonicalAddress, positiveBigInt } from "../../lib/validation.js";
 
 export default defineCommand({
   meta: {
     name: "create",
-    description: "Start a new Jetton pool creation (0.55 TON default; 0.45 TON protocol minimum).",
+    description: "Start a new Jetton pool creation (0.55 GRAM default; 0.45 GRAM protocol minimum).",
   },
   args: {
     ...outputArgs,
@@ -29,11 +30,8 @@ export default defineCommand({
   },
   async run({ args }) {
     const net = await resolveConfiguredNetwork(args.net);
-    const denomination = BigInt(args.denom);
-    if (denomination <= 0n) throw new CliError("Denomination must be positive.", { code: "INVALID_ARG" });
-
-    try { Address.parse(args.jetton); }
-    catch { throw new CliError(`Invalid jetton master: ${args.jetton}`, { code: "INVALID_ADDRESS" }); }
+    const denomination = positiveBigInt(args.denom, "Denomination");
+    const jettonMaster = canonicalAddress(args.jetton, "jetton master");
 
     const ton = await makeTonClient(net);
     const sdk = makeSdkClient(ton);
@@ -42,7 +40,7 @@ export default defineCommand({
     const plan = await planJettonPoolCreation(
       sdk,
       net.factoryAddress,
-      args.jetton,
+      jettonMaster,
       denomination,
     );
     const expectedPool = plan.poolAddress;
@@ -52,10 +50,10 @@ export default defineCommand({
       ui.intro("zkr pool create");
       p.note(
         [
-          `${colors.cyan("Jetton")}:         ${args.jetton}`,
+          `${colors.cyan("Jetton")}:         ${jettonMaster}`,
           `${colors.cyan("Denomination")}:   ${denomination.toString()}`,
           `${colors.cyan("Pool address")}:   ${expectedPool}`,
-          `${colors.cyan("Cost")}:           ${fmtTon(msg.value)}`,
+          `${colors.cyan("Cost")}:           ${formatGram(msg.value)}`,
         ].join("\n"),
         "About to create",
       );
@@ -73,7 +71,7 @@ export default defineCommand({
       {
         pool_create: {
           pool_address: expectedPool,
-          jetton_master: args.jetton,
+          jetton_master: jettonMaster,
           denomination,
           deployer: loaded.address,
           status: "broadcast_pending_activation",

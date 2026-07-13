@@ -1,6 +1,6 @@
 {
-  "name": "@tonresistor/zkresistor-cli",
-  "version": "2.0.0",
+  "name": "zkresistor-cli",
+  "version": "2.0.1",
   "description": "Command-line interface for ZKResistor, a trustless ZK privacy pool on TON. Wallet, deposits, withdraws, pool creation.",
   "license": "MIT",
   "type": "module",
@@ -15,7 +15,9 @@
   ],
   "sideEffects": false,
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "provenance": true,
+    "registry": "https://registry.npmjs.org/"
   },
   "scripts": {
     "build": "tsup src/index.ts --format esm --target node22 --clean --no-dts",
@@ -23,18 +25,18 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
-    "prepublishOnly": "npm run lint && npm run test && npm run build"
+    "check": "npm run lint && npm run test && npm run build",
+    "prepublishOnly": "npm run check"
   },
   "dependencies": {
-    "@clack/prompts": "^0.7.0",
+    "@inquirer/prompts": "^8.5.2",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@orbs-network/ton-access": "^2.3.3",
     "@ton/core": "^0.63.0",
     "@ton/crypto": "^3.3.0",
     "@ton/ton": "^16.3.0",
-    "@tonresistor/zkresistor-sdk": "2.0.0",
+    "@tonresistor/zkresistor-sdk": "2.0.1",
     "citty": "^0.1.6",
-    "consola": "^3.4.0",
     "picocolors": "^1.1.0",
     "zod": "^4.4.3"
   },

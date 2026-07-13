@@ -1,15 +1,3 @@
-/**
- * `Client` adapter — wraps @ton/ton's TonClient as the SDK's RPC primitive.
- *
- * The SDK's `Client` interface is:
- *   - getAccountState(addr) → { status, data, code, balance }
- *   - runMethod(addr, method, params) → { exit_code, stack }
- *   - getTransactions(addr, limit) → { transactions: [{ out_msgs: [{ body }] }] }
- *
- * @ton/ton exposes those via TonClient + @orbs-network/ton-access for
- * free public TON access. Merkle and sparse-set state are rebuilt locally.
- */
-
 import { TonClient, type TonClientParameters } from "@ton/ton";
 import {
   Address,
@@ -35,7 +23,6 @@ const RETRY_ATTEMPTS = 4;
 const RETRY_BASE_MS = 200;
 
 export async function makeTonClient(net: NetworkConfig): Promise<TonClient> {
-  // `ZKR_RPC_ENDPOINT` optionally overrides public ton-access selection.
   const endpoint =
     process.env.ZKR_RPC_ENDPOINT ??
     (await getHttpEndpoint({ network: net.tonAccessNetwork }));
@@ -44,11 +31,6 @@ export async function makeTonClient(net: NetworkConfig): Promise<TonClient> {
   return new TonClient(params);
 }
 
-/**
- * Retry transient network errors (502/503/504/timeouts/connection resets) with
- * exponential backoff. Do NOT retry contract-level failures (exit_code !== 0):
- * those are deterministic and a retry would just waste gas budget.
- */
 async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
   let lastErr: unknown;
   for (let i = 0; i < RETRY_ATTEMPTS; i++) {
@@ -68,7 +50,6 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
 
 function isTransient(e: unknown): boolean {
   const msg = e instanceof Error ? e.message : String(e);
-  // Axios 5xx, connection issues, ton-access gateway hiccups
   return (
     /status code 50[234]/i.test(msg) ||
     /ECONNRESET|ETIMEDOUT|ENETUNREACH|EAI_AGAIN|socket hang up/i.test(msg) ||
@@ -78,8 +59,6 @@ function isTransient(e: unknown): boolean {
 }
 
 function wrapNetworkError(e: unknown): never {
-  // Axios may surface info via `code` (e.g. `ENOTFOUND`, `ECONNREFUSED`),
-  // `response.status`, or `message`. Pick the most descriptive available.
   const ae = e as { code?: string; message?: string; response?: { status?: number } };
   const parts = [
     ae.code && `code=${ae.code}`,
@@ -94,7 +73,6 @@ function wrapNetworkError(e: unknown): never {
   });
 }
 
-/** Wrap a TonClient as the SDK's Client interface, with retry + error mapping. */
 export function makeSdkClient(ton: TonClient): SdkClient {
   return {
     async getAccountState(address: string): Promise<AccountState> {
@@ -129,11 +107,10 @@ export function makeSdkClient(ton: TonClient): SdkClient {
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         const m = msg.match(/exit_code:\s*(-?\d+)/);
-        if (m) {
-          // Real contract-level failure: surface the exit_code shape.
-          return { exit_code: parseInt(m[1]!, 10), stack: [] };
+        const exitCode = m?.[1];
+        if (exitCode !== undefined) {
+          return { exit_code: parseInt(exitCode, 10), stack: [] };
         }
-        // Persistent network error after retries.
         wrapNetworkError(e);
       }
     },
@@ -175,17 +152,12 @@ export function makeSdkClient(ton: TonClient): SdkClient {
             return {
               lt: t.lt.toString(),
               hash: t.hash().toString("base64"),
-              // TonClient v16's transaction object does not expose the shard
-              // block seqno. LT is the deterministic replay order; zero marks
-              // this unavailable metadata honestly.
               block_seqno: 0,
               success: transactionSucceeded(t.description),
               ...(in_msg === undefined ? {} : { in_msg }),
               out_msgs,
             };
           }),
-          // Providers may cap a requested page below `limit`. Continue until
-          // an empty page or the verified checkpoint instead of trusting size.
           incomplete: txs.length > 0,
         };
       } catch (e) {
@@ -195,7 +167,6 @@ export function makeSdkClient(ton: TonClient): SdkClient {
   };
 }
 
-/** Normalize a decoded TON transaction to the SDK's fail-closed success flag. */
 export function transactionSucceeded(description: TransactionDescription): boolean {
   switch (description.type) {
     case "generic":
@@ -215,7 +186,6 @@ export function transactionSucceeded(description: TransactionDescription): boole
   }
 }
 
-/** Resolve an owner's jetton wallet address from a jetton master (TEP-89). */
 export async function resolveJettonWallet(
   ton: TonClient,
   jettonMaster: string,
@@ -254,7 +224,6 @@ function readStackEntry(reader: {
     case "null":
       return null;
     default:
-      // tuple / nan — not used by the SDK getters
       throw new Error(`Unsupported stack entry type: ${item.type}`);
   }
 }

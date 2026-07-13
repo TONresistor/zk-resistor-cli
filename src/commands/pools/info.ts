@@ -1,12 +1,12 @@
 import { defineCommand } from "citty";
-import { Address } from "@ton/core";
-import { Pool, TonPool, Factory } from "@tonresistor/zkresistor-sdk";
-import { colors, fmtTon } from "../../lib/ui.js";
+import { Pool, TonPool } from "@tonresistor/zkresistor-sdk";
+import { colors } from "../../lib/ui.js";
 import { emit, progress } from "../../lib/output.js";
 import { CliError } from "../../lib/errors.js";
 import { outputArgs, networkArgs } from "../../lib/args.js";
-import { resolveConfiguredNetwork } from "../../lib/network.js";
-import { makeSdkClient, makeTonClient } from "../../lib/client.js";
+import { formatGram, formatPoolDenomination } from "../../lib/format.js";
+import { canonicalAddress, sameAddress } from "../../lib/validation.js";
+import { loadPoolCatalog } from "../../lib/pools.js";
 
 export default defineCommand({
   meta: {
@@ -23,37 +23,30 @@ export default defineCommand({
     },
   },
   async run({ args }) {
-    try {
-      Address.parse(args.address);
-    } catch {
-      throw new CliError(`Invalid TON address: ${args.address}`, { code: "INVALID_ADDRESS" });
-    }
-
-    const net = await resolveConfiguredNetwork(args.net);
-    const sdk = makeSdkClient(await makeTonClient(net));
+    const requestedPool = canonicalAddress(args.address, "pool address");
 
     progress("Loading factory + pool…", args);
-    const all = await Factory.listPools(sdk, net.factoryAddress);
-    const match = all.find((p) => p.poolAddress === args.address);
+    const catalog = await loadPoolCatalog(args.net);
+    const match = catalog.pools.find((pool) => sameAddress(pool.poolAddress, requestedPool));
     if (!match) {
-      throw new CliError(`Pool ${args.address} not in factory ${net.factoryAddress}`, {
+      throw new CliError(`Pool ${args.address} not in factory ${catalog.network.factoryAddress}`, {
         code: "POOL_NOT_FOUND",
       });
     }
-
     const state =
       match.kind === "ton"
-        ? await TonPool.readState(sdk, match.poolAddress)
-        : await Pool.readState(sdk, match.poolAddress);
+        ? await TonPool.readState(catalog.client, match.poolAddress)
+        : await Pool.readState(catalog.client, match.poolAddress);
+    const rootHex = "0x" + state.currentRoot.toString(16).padStart(64, "0");
 
     const out: Record<string, unknown> = {
-      network: net.network,
+      network: catalog.network.network,
       address: match.poolAddress,
       kind: match.kind,
       denomination: match.denomination,
       anonymity_set: state.nextIndex,
       capacity: match.capacity,
-      current_root_hex: "0x" + state.currentRoot.toString(16).padStart(64, "0"),
+      current_root_hex: rootHex,
     };
     if (match.kind === "jetton") {
       out.jetton_master = match.jettonMaster;
@@ -70,22 +63,16 @@ export default defineCommand({
       console.log();
       print("Address", match.poolAddress);
       print("Kind", match.kind);
-      print("Denomination", denomLabel(match));
+      print("Denomination", formatPoolDenomination(match));
       print("Anonymity set", `${state.nextIndex} / ${match.capacity}`);
-      print("Current root", out.current_root_hex as string);
+      print("Current root", rootHex);
       if (match.kind === "jetton") {
         print("Jetton master", match.jettonMaster);
         print("Jetton wallet", match.jettonWallet ?? colors.red("(unset)"));
       } else {
-        print("Total locked", fmtTon(match.pendingWithdrawTon));
+        print("Total locked", formatGram(match.pendingWithdrawTon));
       }
       console.log();
     });
   },
 });
-
-function denomLabel(p: import("@tonresistor/zkresistor-sdk").PoolInfo): string {
-  if (p.kind === "ton") return fmtTon(p.denomination);
-  const human = p.denomination / 10n ** BigInt(p.jettonDecimals);
-  return `${human} ${p.jettonSymbol}`;
-}

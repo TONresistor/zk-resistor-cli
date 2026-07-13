@@ -1,18 +1,11 @@
 #!/usr/bin/env node
-/**
- * zkr — ZKResistor CLI entrypoint.
- *
- * Top-level command tree:
- *   zkr wallet  · new / import / list / show / remove / export-mnemonic / sign
- *   zkr pools   · list / info
- *   zkr pool    · create / create-ton / activate
- *   zkr deposit
- *   zkr deposits · recover
- *   zkr withdraw
- *   zkr mcp     · serve
- */
-
-import { defineCommand, runCommand, showUsage } from "citty";
+import {
+  defineCommand,
+  runCommand,
+  showUsage,
+  type CommandDef,
+  type Resolvable,
+} from "citty";
 import wallet from "./commands/wallet/index.js";
 import pools from "./commands/pools/index.js";
 import pool from "./commands/pool/index.js";
@@ -21,14 +14,12 @@ import deposits from "./commands/deposits/index.js";
 import withdraw from "./commands/withdraw.js";
 import mcp from "./commands/mcp/index.js";
 import { emitError } from "./lib/output.js";
-
-// Suppress raw Node deprecation noise — only relevant to library authors.
-process.removeAllListeners("warning");
+import { runInteractive } from "./interactive/index.js";
 
 const main = defineCommand({
   meta: {
     name: "zkr",
-    version: "2.0.0",
+    version: "2.0.1",
     description: "ZKResistor CLI — trustless ZK privacy pool on TON.",
   },
   subCommands: {
@@ -42,43 +33,51 @@ const main = defineCommand({
   },
 });
 
-// Replicate citty's `runMain` behavior but own the error handler. The
-// default `runMain` catches with consola.error which clobbers our JSON
-// envelope on failure.
-(async () => {
+async function runCli(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   try {
-    // Handle --version at the very top.
     if (rawArgs[0] === "--version" || rawArgs[0] === "-v") {
-      const meta = (typeof main.meta === "function" ? await main.meta() : main.meta) as
-        | { version?: string }
-        | undefined;
+      const meta = main.meta === undefined ? undefined : await resolve(main.meta);
       process.stdout.write((meta?.version ?? "0.0.0") + "\n");
-      process.exit(0);
+      return;
     }
-    // Walk subCommands to find which level a trailing --help applies to.
     if (rawArgs.includes("--help") || rawArgs.includes("-h")) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let cmd: any = main;
-      for (const a of rawArgs) {
-        if (a.startsWith("-")) break;
-        const subs = cmd.subCommands;
-        const next = typeof subs === "function" ? await subs() : subs;
-        if (next && a in next) {
-          const def = next[a];
-          cmd = typeof def === "function" ? await def() : def;
-        } else {
-          break;
-        }
+      let command: CommandDef = main;
+      for (const argument of rawArgs) {
+        if (argument.startsWith("-") || command.subCommands === undefined) break;
+        const subCommands = await resolve(command.subCommands);
+        const definition = subCommands[argument];
+        if (definition === undefined) break;
+        command = await resolve(definition);
       }
-      await showUsage(cmd);
-      process.exit(0);
+      await showUsage(command);
+      return;
+    }
+    if (rawArgs.length === 0) {
+      if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        await showUsage(main);
+        return;
+      }
+      await runInteractive({
+        execute: async (interactiveArgs) => {
+          await runCommand(main, { rawArgs: interactiveArgs });
+        },
+      });
+      return;
     }
     await runCommand(main, { rawArgs });
   } catch (err) {
     const json = rawArgs.includes("--json");
     const colorArgIdx = rawArgs.findIndex((a) => a === "--color");
     const color = colorArgIdx >= 0 ? rawArgs[colorArgIdx + 1] : undefined;
-    process.exit(emitError(err, { json, ...(color ? { color } : {}) }));
+    process.exitCode = emitError(err, { json, ...(color ? { color } : {}) });
   }
-})();
+}
+
+async function resolve<T>(value: Resolvable<T>): Promise<T> {
+  return typeof value === "function"
+    ? await (value as () => T | Promise<T>)()
+    : await value;
+}
+
+void runCli();

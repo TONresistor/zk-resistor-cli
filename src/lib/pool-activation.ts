@@ -1,4 +1,3 @@
-import { Address } from "@ton/core";
 import {
   Factory,
   Pool,
@@ -6,6 +5,7 @@ import {
   type BuiltMessage,
   type Client,
 } from "@tonresistor/zkresistor-sdk";
+import { sameAddress } from "./validation.js";
 
 export interface PoolActivationPlan {
   status: "pending" | "active";
@@ -13,10 +13,6 @@ export interface PoolActivationPlan {
   jettonMaster: string;
   denomination: bigint;
   walletBound: boolean;
-}
-
-function sameAddress(left: string, right: string): boolean {
-  return Address.parse(left).equals(Address.parse(right));
 }
 
 export function buildPoolActivationMessage(
@@ -27,7 +23,6 @@ export function buildPoolActivationMessage(
   return buildInitWalletBinding({ poolAddress, queryId, walletBound });
 }
 
-/** Fail closed unless the target is the selected Factory's registered Jetton Pool. */
 export async function planPoolActivation(
   client: Client,
   factoryAddress: string,

@@ -1,35 +1,43 @@
 import { defineCommand } from "citty";
-import { Factory, type PoolInfo } from "@tonresistor/zkresistor-sdk";
-import { colors, fmtTon, shortAddr } from "../../lib/ui.js";
+import type { PoolInfo } from "@tonresistor/zkresistor-sdk";
+import { colors } from "../../lib/ui.js";
 import { emit, progress } from "../../lib/output.js";
 import { outputArgs, networkArgs } from "../../lib/args.js";
-import { resolveConfiguredNetwork } from "../../lib/network.js";
-import { makeSdkClient, makeTonClient } from "../../lib/client.js";
+import {
+  displayPoolAsset,
+  formatGram,
+  formatPoolAmount,
+  shortAddress,
+} from "../../lib/format.js";
+import { loadPoolCatalog } from "../../lib/pools.js";
 
 export default defineCommand({
   meta: {
     name: "list",
-    description: "List all deployed pools (jetton + TON).",
+    description: "List all deployed pools (Jetton and GRAM).",
   },
   args: {
     ...outputArgs,
     ...networkArgs,
+    compact: {
+      type: "boolean",
+      description: "Use a compact one-line display with shortened addresses.",
+      default: false,
+    },
   },
   async run({ args }) {
-    const net = await resolveConfiguredNetwork(args.net);
-    progress(`Reading factory ${shortAddr(net.factoryAddress)}…`, args);
-    const sdk = makeSdkClient(await makeTonClient(net));
-    const pools = await Factory.listPools(sdk, net.factoryAddress);
+    progress("Reading factory Pools…", args);
+    const catalog = await loadPoolCatalog(args.net);
 
     emit(
       {
-        network: net.network,
-        factory: net.factoryAddress,
-        pool_count: pools.length,
-        pools: pools.map(toJson),
+        network: catalog.network.network,
+        factory: catalog.network.factoryAddress,
+        pool_count: catalog.pools.length,
+        pools: catalog.pools.map(toJson),
       },
       args,
-      () => prettyList(pools),
+      () => prettyList(catalog.pools, args.compact),
     );
   },
 });
@@ -57,23 +65,25 @@ function toJson(p: PoolInfo): Record<string, unknown> {
   };
 }
 
-function prettyList(pools: PoolInfo[]): void {
+function prettyList(pools: PoolInfo[], compact: boolean): void {
   if (pools.length === 0) {
     console.log(colors.dim("\n  No pools deployed.\n"));
     return;
   }
   console.log();
   for (const pool of pools) {
-    const head =
-      pool.kind === "ton"
-        ? `${colors.cyan("TON".padEnd(8))} ${fmtTon(pool.denomination).padEnd(14)}`
-        : `${colors.cyan(pool.jettonSymbol.padEnd(8))} ${(pool.denomination / 10n ** BigInt(pool.jettonDecimals)).toString().padEnd(14)}`;
+    const head = `${colors.cyan(displayPoolAsset(pool).padEnd(8))} ${formatPoolAmount(pool).padEnd(14)}`;
     const deposits = `${pool.nextIndex.toString().padStart(4)} deposits`;
     const locked =
       pool.kind === "ton"
-        ? fmtTon(pool.pendingWithdrawTon)
+        ? formatGram(pool.pendingWithdrawTon)
         : colors.dim("(off-chain jetton balance)");
-    console.log(`  ${head}  ${colors.dim(shortAddr(pool.poolAddress))}  ${deposits}  ${locked}`);
+    if (compact) {
+      console.log(`  ${head}  ${colors.dim(shortAddress(pool.poolAddress))}  ${deposits}  ${locked}`);
+      continue;
+    }
+    console.log(`  ${head}  ${deposits}  ${locked}`);
+    console.log(`  ${pool.poolAddress}`);
+    console.log();
   }
-  console.log();
 }

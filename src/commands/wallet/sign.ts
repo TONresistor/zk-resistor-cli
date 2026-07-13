@@ -5,12 +5,8 @@ import { emit } from "../../lib/output.js";
 import { CliError } from "../../lib/errors.js";
 import { outputArgs } from "../../lib/args.js";
 import { unlockWallet } from "../../lib/wallet.js";
+import { readStdin } from "../../lib/input.js";
 
-/**
- * Sign an arbitrary body cell with the wallet's private key. Returns the
- * Ed25519 signature (64 bytes). Used for off-chain attestations or future
- * relayer protocols. Does NOT broadcast anything.
- */
 export default defineCommand({
   meta: {
     name: "sign",
@@ -32,7 +28,7 @@ export default defineCommand({
     const bodyRaw =
       args.body ??
       (!process.stdin.isTTY
-        ? await readAllStdin()
+        ? await readStdin()
         : (() => {
             throw new CliError("No body provided.", {
               code: "INVALID_ARG",
@@ -58,25 +54,23 @@ export default defineCommand({
   },
 });
 
-async function readAllStdin(): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const c of process.stdin) chunks.push(c as Buffer);
-  return Buffer.concat(chunks).toString("utf8");
-}
-
 function parseBocAny(s: string): Cell {
-  // hex (0x-prefixed or bare) → buffer
   if (/^(0x)?[0-9a-f]+$/i.test(s)) {
     const hex = s.startsWith("0x") ? s.slice(2) : s;
-    try {
-      return Cell.fromBoc(Buffer.from(hex, "hex"))[0]!;
-    } catch {
-      // fall through to base64 attempt
-    }
+    const cell = parseHexBoc(hex);
+    if (cell !== null) return cell;
   }
   try {
     return Cell.fromBase64(s);
   } catch {
     throw new CliError("Could not parse body as hex or base64 BOC.", { code: "INVALID_ARG" });
+  }
+}
+
+function parseHexBoc(hex: string): Cell | null {
+  try {
+    return Cell.fromBoc(Buffer.from(hex, "hex"))[0] ?? null;
+  } catch {
+    return null;
   }
 }

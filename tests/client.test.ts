@@ -112,7 +112,6 @@ describe("TonClient SDK adapter", () => {
       lt: before.lt,
       hash: before.hash,
     });
-    // A provider may return fewer rows than requested even when older history exists.
     expect(result.incomplete).toBe(true);
     expect(result.transactions[0]).toMatchObject({
       lt: "123",

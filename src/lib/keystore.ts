@@ -1,27 +1,3 @@
-/**
- * Encrypted JSON keystore for the wallet mnemonic.
- *
- * Format (matches the Foundry/Geth keystore-v3 spirit, scrypt-only):
- *
- *     {
- *       "version": 1,
- *       "address": "EQ...",
- *       "createdAt": "2026-05-18T12:34:56Z",
- *       "kdf": "scrypt",
- *       "kdfParams": { "N": 131072, "r": 8, "p": 1, "saltB64": "..." },
- *       "cipher": "aes-256-gcm",
- *       "cipherParams": { "ivB64": "..." },
- *       "ciphertextB64": "...",
- *       "authTagB64": "..."
- *     }
- *
- * Stored at `~/.config/zkresistor/wallets/<name>.json` mode 0600.
- *
- * Passphrase is requested interactively (clack `password`) or via the
- * `ZKR_PASSPHRASE` env var for CI/scripts. Never logged, never persisted
- * outside the in-memory derived key during a single command's lifetime.
- */
-
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import {
@@ -32,13 +8,14 @@ import {
 } from "node:crypto";
 import { CONFIG_DIR } from "./config.js";
 import { CliError } from "./errors.js";
+import { isValidWalletName, WALLET_NAME_HINT } from "./validation.js";
 
 const KEYSTORE_VERSION = 1 as const;
-const SCRYPT_N = 1 << 17; // 131072
+const SCRYPT_N = 1 << 17;
 const SCRYPT_R = 8;
 const SCRYPT_P = 1;
-const KEY_LEN = 32; // AES-256
-const IV_LEN = 12; // GCM standard
+const KEY_LEN = 32;
+const IV_LEN = 12;
 const SALT_LEN = 16;
 
 interface KeystoreV1 {
@@ -58,10 +35,10 @@ function walletsDir(): string {
 }
 
 function walletPath(name: string): string {
-  if (!/^[a-zA-Z0-9_-]{1,32}$/.test(name)) {
+  if (!isValidWalletName(name)) {
     throw new CliError(`Invalid wallet name "${name}"`, {
       code: "INVALID_ARG",
-      hint: "Use 1-32 alphanumerics, dashes, or underscores.",
+      hint: WALLET_NAME_HINT,
     });
   }
   return join(walletsDir(), `${name}.json`);
@@ -72,15 +49,10 @@ function deriveKey(passphrase: string, salt: Buffer): Buffer {
     N: SCRYPT_N,
     r: SCRYPT_R,
     p: SCRYPT_P,
-    // Default maxmem is too low for N=131072 — bump it.
     maxmem: 256 * 1024 * 1024,
   });
 }
 
-/**
- * Encrypt a mnemonic (or any UTF-8 payload) and write to disk.
- * Throws CliError if a wallet with that name already exists, unless `overwrite`.
- */
 export async function writeKeystore(opts: {
   name: string;
   address: string;
@@ -194,7 +166,7 @@ export async function listKeystores(): Promise<{ name: string; address: string }
       const ks = await readKeystore(name);
       out.push({ name, address: ks.address });
     } catch {
-      // Skip malformed entries silently.
+      continue;
     }
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));

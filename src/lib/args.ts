@@ -1,18 +1,3 @@
-/**
- * Shared argument specs spreadable into every `defineCommand({ args })`.
- *
- * The Acton CLI convention is that every command supports `--json` and
- * `--color`, and every chain-touching command supports `--net`. Citty doesn't
- * auto-inherit subcommand args, so we spread these where needed.
- *
- * Usage:
- *   args: {
- *     ...outputArgs,
- *     ...networkArgs,
- *     name: { type: "string" },
- *   }
- */
-
 export const outputArgs = {
   json: {
     type: "boolean",

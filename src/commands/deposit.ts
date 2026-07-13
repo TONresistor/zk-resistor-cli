@@ -1,8 +1,7 @@
 import { defineCommand } from "citty";
-import * as p from "@clack/prompts";
-import { Address } from "@ton/core";
+import * as p from "../lib/prompts.js";
 import { Factory, finalizeDeposit, prepareDeposit } from "@tonresistor/zkresistor-sdk";
-import { ui, colors, fmtTon } from "../lib/ui.js";
+import { ui, colors } from "../lib/ui.js";
 import { emit, progress } from "../lib/output.js";
 import { CliError } from "../lib/errors.js";
 import { outputArgs, networkArgs, walletArg, yesArg } from "../lib/args.js";
@@ -13,6 +12,12 @@ import { sendOne, unlockWallet } from "../lib/wallet.js";
 import { loadInsertProver, loadPoseidon2 } from "../lib/prover.js";
 import { withPersistentState } from "../lib/state.js";
 import { submitPendingDeposit } from "../lib/pending-deposit.js";
+import {
+  displayPoolAsset,
+  formatPoolDenomination,
+  notePoolAsset,
+} from "../lib/format.js";
+import { canonicalAddress, sameAddress } from "../lib/validation.js";
 
 export default defineCommand({
   meta: {
@@ -34,15 +39,8 @@ export default defineCommand({
 
     progress("Reading factory…", args);
     const pools = await Factory.listPools(sdk, net.factoryAddress);
-    let requestedPool: Address;
-    try {
-      requestedPool = Address.parse(args.pool);
-    } catch {
-      throw new CliError(`Invalid pool address: ${args.pool}`, {
-        code: "INVALID_ADDRESS",
-      });
-    }
-    const pool = pools.find((x) => Address.parse(x.poolAddress).equals(requestedPool));
+    const requestedPool = canonicalAddress(args.pool, "pool address");
+    const pool = pools.find((entry) => sameAddress(entry.poolAddress, requestedPool));
     if (!pool) {
       throw new CliError(`Pool ${args.pool} not found.`, {
         code: "POOL_NOT_FOUND",
@@ -70,8 +68,8 @@ export default defineCommand({
       p.note(
         [
           `${colors.cyan("Pool")}:         ${pool.poolAddress}`,
-          `${colors.cyan("Asset")}:        ${pool.kind === "ton" ? "TON" : pool.jettonSymbol}`,
-          `${colors.cyan("Denomination")}: ${denomLabel(pool)}`,
+          `${colors.cyan("Asset")}:        ${displayPoolAsset(pool)}`,
+          `${colors.cyan("Denomination")}: ${formatPoolDenomination(pool)}`,
           `${colors.cyan("From")}:         ${loaded.address}`,
         ].join("\n"),
         "About to deposit",
@@ -93,7 +91,7 @@ export default defineCommand({
       const prep = await prepareDeposit(sdk, {
         kind: pool.kind,
         poolAddress: pool.poolAddress,
-        asset: pool.kind === "ton" ? "TON" : pool.jettonSymbol,
+        asset: notePoolAsset(pool),
         denomination: pool.denomination,
         userAddress: loaded.address,
         userJettonWallet,
@@ -145,7 +143,7 @@ export default defineCommand({
       {
         deposit: {
           pool: pool.poolAddress,
-          asset: pool.kind === "ton" ? "TON" : pool.jettonSymbol,
+          asset: notePoolAsset(pool),
           denomination: pool.denomination,
           from: loaded.address,
           note: result.noteString,
@@ -156,14 +154,8 @@ export default defineCommand({
       },
       args,
       () => {
-        ui.outro(`Deposited ${denomLabel(pool)} → ${pool.poolAddress.slice(0, 8)}…`);
+        ui.outro(`Deposited ${formatPoolDenomination(pool)} → ${pool.poolAddress.slice(0, 8)}…`);
       },
     );
   },
 });
-
-function denomLabel(p: import("@tonresistor/zkresistor-sdk").PoolInfo): string {
-  if (p.kind === "ton") return fmtTon(p.denomination);
-  const human = p.denomination / 10n ** BigInt(p.jettonDecimals);
-  return `${human} ${p.jettonSymbol}`;
-}

@@ -1,7 +1,7 @@
 import { defineCommand } from "citty";
-import * as p from "@clack/prompts";
+import * as p from "../../lib/prompts.js";
 import { TON_POOL_DENOMINATIONS } from "@tonresistor/zkresistor-sdk";
-import { ui, colors, fmtTon } from "../../lib/ui.js";
+import { ui, colors } from "../../lib/ui.js";
 import { emit, progress } from "../../lib/output.js";
 import { CliError } from "../../lib/errors.js";
 import { outputArgs, networkArgs, walletArg, yesArg } from "../../lib/args.js";
@@ -9,23 +9,25 @@ import { resolveConfiguredNetwork } from "../../lib/network.js";
 import { makeSdkClient, makeTonClient } from "../../lib/client.js";
 import { sendOne, unlockWallet } from "../../lib/wallet.js";
 import { planTonPoolCreation } from "../../lib/pool-creation.js";
+import { formatGram } from "../../lib/format.js";
+import { positiveBigInt } from "../../lib/validation.js";
 
 export default defineCommand({
   meta: {
     name: "create-ton",
-    description: "Start a native TON pool creation (0.55 TON default; 0.45 TON protocol minimum).",
+    description: "Start a native GRAM pool creation (0.55 GRAM default; 0.45 GRAM protocol minimum).",
   },
   args: {
     ...outputArgs,
     ...networkArgs,
     ...walletArg,
     ...yesArg,
-    denom: { type: "string", description: "Denomination in nanoTON.", required: true },
+    denom: { type: "string", description: "Denomination in nanograms.", required: true },
   },
   async run({ args }) {
     const net = await resolveConfiguredNetwork(args.net);
-    const denomination = BigInt(args.denom);
-    if (!TON_POOL_DENOMINATIONS.includes(denomination as never)) {
+    const denomination = positiveBigInt(args.denom, "Denomination");
+    if (!TON_POOL_DENOMINATIONS.some((allowed) => allowed === denomination)) {
       throw new CliError(
         `Denomination ${denomination} not in whitelist.`,
         {
@@ -37,7 +39,7 @@ export default defineCommand({
 
     const ton = await makeTonClient(net);
     const sdk = makeSdkClient(ton);
-    progress("Checking Factory and computing the deterministic TonPool address…", args);
+    progress("Checking Factory and computing the deterministic GRAM Pool address…", args);
     const plan = await planTonPoolCreation(sdk, net.factoryAddress, denomination);
     const expectedPool = plan.poolAddress;
     const msg = plan.message;
@@ -46,11 +48,11 @@ export default defineCommand({
       ui.intro("zkr pool create-ton");
       p.note(
         [
-          `${colors.cyan("Denomination")}: ${fmtTon(denomination)}`,
+          `${colors.cyan("Denomination")}: ${formatGram(denomination)}`,
           `${colors.cyan("Pool address")}: ${expectedPool}`,
-          `${colors.cyan("Cost")}:         ${fmtTon(msg.value)}`,
+          `${colors.cyan("Cost")}:         ${formatGram(msg.value)}`,
         ].join("\n"),
-        "About to create TonPool",
+        "About to create GRAM Pool",
       );
       const ok = await p.confirm({ message: "Proceed?", initialValue: false });
       if (p.isCancel(ok) || !ok) throw new CliError("Cancelled.", { code: "CANCELLED" });
@@ -59,7 +61,7 @@ export default defineCommand({
     progress(`Unlocking wallet "${args.wallet}"…`, args);
     const loaded = await unlockWallet({ name: args.wallet });
 
-    progress("Broadcasting CreateTonPool…", args);
+    progress("Broadcasting GRAM Pool creation…", args);
     await sendOne(ton, loaded, { to: msg.address, value: msg.value, body: msg.payload });
 
     emit(
@@ -72,7 +74,7 @@ export default defineCommand({
         },
       },
       args,
-      () => ui.outro(`TonPool creation broadcast: ${expectedPool}`),
+      () => ui.outro(`GRAM Pool creation broadcast: ${expectedPool}`),
     );
   },
 });

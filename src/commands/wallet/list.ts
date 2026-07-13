@@ -1,12 +1,13 @@
 import { defineCommand } from "citty";
 import { Address } from "@ton/core";
-import { ui, colors, fmtTon } from "../../lib/ui.js";
+import { ui, colors } from "../../lib/ui.js";
 import { emit, progress } from "../../lib/output.js";
 import { CliError } from "../../lib/errors.js";
 import { outputArgs, networkArgs } from "../../lib/args.js";
 import { listKeystores } from "../../lib/keystore.js";
 import { resolveConfiguredNetwork } from "../../lib/network.js";
 import { makeTonClient } from "../../lib/client.js";
+import { formatGram } from "../../lib/format.js";
 
 export default defineCommand({
   meta: {
@@ -65,7 +66,7 @@ export default defineCommand({
         ui.log.info(`Stored wallets (${net.network}):`);
         console.log();
         for (const w of withBalances) {
-          const bal = w.balance === null ? colors.dim("—") : fmtTon(w.balance);
+          const bal = w.balance === null ? colors.dim("—") : formatGram(w.balance);
           console.log(`  ${colors.cyan(w.name.padEnd(10))} ${w.address}  ${colors.dim("·")}  ${bal}`);
         }
         console.log();

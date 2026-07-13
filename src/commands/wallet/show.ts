@@ -2,13 +2,14 @@ import { defineCommand } from "citty";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Address } from "@ton/core";
-import { colors, fmtTon } from "../../lib/ui.js";
+import { colors } from "../../lib/ui.js";
 import { emit } from "../../lib/output.js";
 import { CliError } from "../../lib/errors.js";
 import { outputArgs, networkArgs } from "../../lib/args.js";
 import { readKeystore } from "../../lib/keystore.js";
 import { resolveConfiguredNetwork } from "../../lib/network.js";
 import { makeTonClient } from "../../lib/client.js";
+import { formatGram } from "../../lib/format.js";
 
 export default defineCommand({
   meta: {
@@ -31,15 +32,11 @@ export default defineCommand({
     });
     const net = await resolveConfiguredNetwork(args.net);
     const ton = await makeTonClient(net);
-    let balance: bigint | null = null;
-    let status = "unknown";
-    try {
-      const state = await ton.getContractState(Address.parse(ks.address));
-      balance = state.balance;
-      status = state.state;
-    } catch {
-      // Network unreachable — leave nulls.
-    }
+    const state = await ton
+      .getContractState(Address.parse(ks.address))
+      .catch(() => null);
+    const balance = state?.balance ?? null;
+    const status = state?.state ?? "unknown";
 
     const keystorePath = join(homedir(), ".config", "zkresistor", "wallets", `${args.name}.json`);
 
@@ -63,7 +60,7 @@ export default defineCommand({
         print("Name", args.name);
         print("Address", ks.address);
         print("Status", status);
-        print("Balance", balance === null ? colors.dim("(unreachable)") : fmtTon(balance));
+        print("Balance", balance === null ? colors.dim("(unreachable)") : formatGram(balance));
         print("Network", net.network);
         print("Created", ks.createdAt);
         print("Path", keystorePath);

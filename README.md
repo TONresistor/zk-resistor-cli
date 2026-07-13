@@ -1,8 +1,8 @@
-# @tonresistor/zkresistor-cli
+# zkresistor-cli
 
 Self-hosted CLI and MCP interface for ZKResistor privacy pools on TON.
 
-Version `2.0.0` reconstructs pool state and generates Groth16 proofs locally.
+Version `2.0.1` reconstructs pool state and generates Groth16 proofs locally.
 Public TON infrastructure supplies chain data only. No private bridge, indexer,
 or public relayer daemon is required.
 
@@ -11,22 +11,36 @@ or public relayer daemon is required.
 Requires Node.js 22 or newer.
 
 ```bash
-npm ci
-npm run build
-npm install -g .
+npm install -g zkresistor-cli
+zkr
 ```
+
+Run once without installing globally with `npx zkresistor-cli`.
 
 The default mainnet Factory is:
 
 ```text
-EQD3rhFaCusU0715MZonDNj8GuHeA17KygIXkBLkalpkBjle
+EQB8W1W276GWiQpK88Sx46K20rsMrCKIezOpwFGJ4dhjWz58
 ```
 
 ## Usage
 
+Open the interactive CLI:
+
+```bash
+zkr
+```
+
+`Browse Pools` lists every active Pool. Filter by GRAM or Jettons, or select
+`Search Pool` to search by token, denomination, or address. Selecting a Pool
+carries its full address into deposit, withdraw, and inspection flows.
+
+Commands remain available for scripts and automation:
+
 ```bash
 zkr wallet new --name main
 zkr pools list
+zkr pools list --compact
 zkr deposit --pool EQ_pool --wallet main
 zkr deposits recover --wallet main
 zkr withdraw --note 'zkresistor:...' --to EQ_recipient --wallet main
@@ -35,7 +49,7 @@ zkr withdraw --note 'zkresistor:...' --to EQ_recipient --wallet main
 | Command | Purpose |
 |---|---|
 | `wallet new/import/list/show/remove/export-mnemonic/sign` | Encrypted local wallets |
-| `pools list` / `pools info` | Discover and inspect pools |
+| `pools list` / `pools info` | List full Pool addresses and inspect state |
 | `pool create` / `create-ton` / `activate` | Create and activate pools |
 | `deposit` | Synchronize, prove, and deposit |
 | `withdraw` | Synchronize, prove, and withdraw |
@@ -69,9 +83,8 @@ may also live in `./zkresistor.config.json` or
 ## Development
 
 ```bash
-npm run lint
-npm test
-npm run build
+npm ci
+npm run check
 bash scripts/smoke.sh
 ```
 

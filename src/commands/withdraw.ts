@@ -1,7 +1,6 @@
 import { defineCommand } from "citty";
-import * as p from "@clack/prompts";
-import { Address } from "@ton/core";
-import { buildWithdraw, Factory, parseNote } from "@tonresistor/zkresistor-sdk";
+import * as p from "../lib/prompts.js";
+import { buildWithdraw, parseNote } from "@tonresistor/zkresistor-sdk";
 import { ui, colors } from "../lib/ui.js";
 import { emit, progress } from "../lib/output.js";
 import { CliError } from "../lib/errors.js";
@@ -12,11 +11,17 @@ import { makeSdkClient, makeTonClient } from "../lib/client.js";
 import { sendOne, unlockWallet } from "../lib/wallet.js";
 import { loadPoseidon2, loadWithdrawProver } from "../lib/prover.js";
 import { withPersistentState } from "../lib/state.js";
+import { readStdin } from "../lib/input.js";
+import {
+  canonicalRecipientAddress,
+  notePoolBinding,
+  optionalUint64,
+} from "../lib/validation.js";
 
 export default defineCommand({
   meta: {
     name: "withdraw",
-    description: "Withdraw from a pool. The broadcaster can receive up to the 0.30 TON earmark, net of costs.",
+    description: "Withdraw from a pool. The broadcaster can receive up to the 0.30 GRAM earmark, net of costs.",
   },
   args: {
     ...outputArgs,
@@ -34,7 +39,7 @@ export default defineCommand({
     },
     pool: {
       type: "string",
-      description: "Pool address. Optional if the note matches exactly one pool.",
+      description: "Optional assertion of the pool address bound to the note.",
     },
     "query-id": {
       type: "string",
@@ -46,60 +51,25 @@ export default defineCommand({
     const note = parseNote(noteRaw);
     if (!note) throw new CliError("Invalid note format.", { code: "INVALID_NOTE" });
 
-    try { Address.parse(args.to); }
-    catch { throw new CliError(`Invalid recipient: ${args.to}`, { code: "INVALID_ADDRESS" }); }
+    const recipient = canonicalRecipientAddress(args.to);
 
     const net = await resolveConfiguredNetwork(args.net);
-    const queryId = parseOptionalQueryId(args["query-id"]);
+    const queryId = optionalUint64(args["query-id"]);
     const cfg = await loadZkrConfig();
     const ton = await makeTonClient(net);
     const sdk = makeSdkClient(ton);
 
-    let poolAddress = args.pool ?? note.poolAddress;
-    if (!poolAddress) {
-      progress("Discovering pool from note…", args);
-      const all = await Factory.listPools(sdk, net.factoryAddress);
-      const matches = all.filter((pool) => {
-        if (note.asset === "TON") return pool.kind === "ton" && pool.denomination === note.denominationUnits;
-        return pool.kind === "jetton" && pool.jettonSymbol === note.asset && pool.denomination === note.denominationUnits;
-      });
-      if (matches.length === 0) {
-        throw new CliError(`No pool matches the note.`, {
-          code: "POOL_NOT_FOUND",
-          details: { asset: note.asset, denomination: note.denominationUnits.toString() },
-        });
-      }
-      if (matches.length > 1) {
-        throw new CliError("Multiple pools match this note. Pass --pool.", {
-          code: "POOL_AMBIGUOUS",
-          details: { matches: matches.map((m) => m.poolAddress) },
-        });
-      }
-      poolAddress = matches[0]!.poolAddress;
-    }
-    try {
-      poolAddress = Address.parse(poolAddress).toString({
-        urlSafe: true,
-        bounceable: true,
-      });
-    } catch {
-      throw new CliError(`Invalid pool address: ${poolAddress}`, {
-        code: "INVALID_ADDRESS",
-      });
-    }
-
-    const kind: "jetton" | "ton" =
-      note.poolKind ?? (note.asset === "TON" ? "ton" : "jetton");
+    const { poolAddress, kind } = notePoolBinding(note, args.pool);
 
     if (!args.yes && !args.json) {
       ui.intro("zkr withdraw");
       p.note(
         [
           `${colors.cyan("Pool")}:      ${poolAddress}`,
-          `${colors.cyan("Asset")}:     ${note.asset}`,
-          `${colors.cyan("Recipient")}: ${args.to}`,
+          `${colors.cyan("Asset")}:     ${kind === "ton" ? "GRAM" : note.asset}`,
+          `${colors.cyan("Recipient")}: ${recipient}`,
           ...(queryId !== undefined ? [`${colors.cyan("Client query id")}: ${queryId}`] : []),
-          colors.dim("Broadcaster return: up to the 0.30 TON earmark, net of transaction and action costs."),
+          colors.dim("Broadcaster return: up to the 0.30 GRAM earmark, net of transaction and action costs."),
         ].join("\n"),
         "About to withdraw",
       );
@@ -115,7 +85,7 @@ export default defineCommand({
     const plan = await withPersistentState({
       client: sdk,
       network: net.network,
-      poolAddress: poolAddress!,
+      poolAddress,
       kind,
       poseidon2,
       rootDir: cfg.stateDir,
@@ -124,8 +94,8 @@ export default defineCommand({
       const built = await buildWithdraw(sdk, {
         kind,
         note,
-        poolAddress: poolAddress!,
-        recipientAddress: args.to,
+        poolAddress,
+        recipientAddress: recipient,
         queryId,
         stateProvider: persistent.provider,
         poseidon2,
@@ -151,7 +121,7 @@ export default defineCommand({
       {
         withdraw: {
           pool: poolAddress,
-          recipient: args.to,
+          recipient,
           asset: note.asset,
           denomination: note.denominationUnits,
           query_id: plan.queryId,
@@ -168,30 +138,10 @@ export default defineCommand({
   },
 });
 
-function parseOptionalQueryId(raw: unknown): bigint | undefined {
-  if (raw === undefined || raw === null || raw === "") return undefined;
-  if (typeof raw !== "string" || !/^\d+$/.test(raw)) {
-    throw new CliError("Invalid query id.", {
-      code: "INVALID_ARG",
-      hint: "Pass --query-id as a decimal integer.",
-    });
-  }
-  const queryId = BigInt(raw);
-  if (queryId >= 1n << 64n) {
-    throw new CliError("Invalid query id.", {
-      code: "INVALID_ARG",
-      hint: "Client query ids must fit an unsigned 64-bit integer.",
-    });
-  }
-  return queryId;
-}
-
 async function resolveNote(flag: unknown, promptIfMissing: boolean): Promise<string> {
   if (typeof flag === "string" && flag.length > 0) return flag.trim();
   if (!process.stdin.isTTY) {
-    const chunks: Buffer[] = [];
-    for await (const c of process.stdin) chunks.push(c as Buffer);
-    const raw = Buffer.concat(chunks).toString("utf8").trim();
+    const raw = (await readStdin()).trim();
     if (raw) return raw;
   }
   if (!promptIfMissing) {

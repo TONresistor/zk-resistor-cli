@@ -64,7 +64,6 @@ describe("FileMerkleStateStore", () => {
       eventIndex: 0,
     })).toEqual([]);
 
-    // The snapshot is a real file, not an in-memory test double.
     const snapshot = await stat(join(
       root,
       "mainnet",

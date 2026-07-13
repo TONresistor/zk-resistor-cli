@@ -11,7 +11,7 @@ export interface NetworkConfig {
   tonAccessNetwork: "mainnet" | "testnet";
 }
 
-const MAINNET_FACTORY = "EQD3rhFaCusU0715MZonDNj8GuHeA17KygIXkBLkalpkBjle";
+const MAINNET_FACTORY = "EQB8W1W276GWiQpK88Sx46K20rsMrCKIezOpwFGJ4dhjWz58";
 
 const NETWORKS: Record<Network, Omit<NetworkConfig, "factoryAddress"> & { factoryAddress: string }> = {
   mainnet: {
@@ -47,7 +47,6 @@ export function resolveNetwork(
   };
 }
 
-/** Resolve the command network with CLI > env > JSON > built-in precedence. */
 export async function resolveConfiguredNetwork(
   input: string | undefined,
   options: LoadZkrConfigOptions = {},

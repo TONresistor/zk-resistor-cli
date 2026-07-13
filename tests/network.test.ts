@@ -47,7 +47,7 @@ describe("resolveNetwork", () => {
   it("uses the final mainnet Factory by default", () => {
     const net = resolveNetwork("mainnet", { env: {} });
     expect(net.factoryAddress).toBe(
-      "EQD3rhFaCusU0715MZonDNj8GuHeA17KygIXkBLkalpkBjle",
+      "EQB8W1W276GWiQpK88Sx46K20rsMrCKIezOpwFGJ4dhjWz58",
     );
     expect(net.tonAccessNetwork).toBe("mainnet");
   });

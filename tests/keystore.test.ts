@@ -1,9 +1,8 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 
-// Redirect CONFIG_DIR to a temp dir BEFORE importing the keystore module.
 const TMP = mkdtempSync(join(tmpdir(), "zkr-test-"));
 process.env.HOME = TMP;
 process.env.USERPROFILE = TMP;
@@ -13,10 +12,6 @@ const { writeKeystore, readKeystore, decryptKeystore, listKeystores } =
 const { CliError } = await import("../src/lib/errors.js");
 
 describe("keystore round-trip", () => {
-  beforeEach(() => {
-    // Each test gets a fresh name; we never delete in test to keep things simple.
-  });
-
   it("writes, reads, decrypts a mnemonic with the right passphrase", async () => {
     const mnemonic = "abandon ".repeat(23) + "abandon";
     const path = await writeKeystore({

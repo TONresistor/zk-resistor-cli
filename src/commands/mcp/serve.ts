@@ -2,10 +2,10 @@ import { defineCommand } from "citty";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { Address } from "@ton/core";
 import {
   Factory,
   Pool,
+  TON_POOL_DENOMINATIONS,
   TonPool,
   buildWithdraw,
   finalizeDeposit,
@@ -37,6 +37,15 @@ import {
   planJettonPoolCreation,
   planTonPoolCreation,
 } from "../../lib/pool-creation.js";
+import { notePoolAsset } from "../../lib/format.js";
+import {
+  canonicalAddress,
+  canonicalRecipientAddress,
+  notePoolBinding,
+  optionalUint64,
+  positiveBigInt,
+  sameAddress,
+} from "../../lib/validation.js";
 
 const networkArg = z.enum(["mainnet", "testnet"]).optional();
 const READ = { readOnlyHint: true, openWorldHint: true };
@@ -53,6 +62,18 @@ function jsonResult(value: unknown) {
 
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+async function toolResult(operation: () => Promise<unknown>) {
+  try {
+    return jsonResult(await operation());
+  } catch (error) {
+    return jsonResult(
+      isPendingDepositError(error)
+        ? pendingDepositErrorPayload(error)
+        : { error: errText(error) },
+    );
+  }
 }
 
 async function sdkFor(network: Network | undefined) {
@@ -73,7 +94,7 @@ function requirePassphrase(): string {
 }
 
 function buildServer(): McpServer {
-  const server = new McpServer({ name: "zkresistor", version: "2.0.0" });
+  const server = new McpServer({ name: "zkresistor", version: "2.0.1" });
 
   server.registerTool(
     "list_pools",
@@ -84,15 +105,12 @@ function buildServer(): McpServer {
       inputSchema: { network: networkArg },
       annotations: READ,
     },
-    async ({ network }) => {
-      try {
+    async ({ network }) =>
+      toolResult(async () => {
         const { net, sdk } = await sdkFor(network);
         const pools = await Factory.listPools(sdk, net.factoryAddress);
-        return jsonResult({ network: net.network, poolCount: pools.length, pools });
-      } catch (e) {
-        return jsonResult({ error: errText(e) });
-      }
-    },
+        return { network: net.network, poolCount: pools.length, pools };
+      }),
   );
 
   server.registerTool(
@@ -107,23 +125,22 @@ function buildServer(): McpServer {
       },
       annotations: READ,
     },
-    async ({ address, network }) => {
-      try {
+    async ({ address, network }) =>
+      toolResult(async () => {
         const { net, sdk } = await sdkFor(network);
         const pools = await Factory.listPools(sdk, net.factoryAddress);
-        const pool = pools.find((x) => x.poolAddress === address);
+        const requestedPool = canonicalAddress(address, "pool address");
+        const pool = pools.find((entry) =>
+          sameAddress(entry.poolAddress, requestedPool));
         if (!pool) {
-          return jsonResult({ error: `Pool ${address} not found on ${net.network}.` });
+          throw new Error(`Pool ${address} not found on ${net.network}.`);
         }
         const state =
           pool.kind === "ton"
             ? await TonPool.readState(sdk, pool.poolAddress)
             : await Pool.readState(sdk, pool.poolAddress);
-        return jsonResult({ network: net.network, pool, state });
-      } catch (e) {
-        return jsonResult({ error: errText(e) });
-      }
-    },
+        return { network: net.network, pool, state };
+      }),
   );
 
   server.registerTool(
@@ -135,13 +152,7 @@ function buildServer(): McpServer {
       inputSchema: {},
       annotations: READ,
     },
-    async () => {
-      try {
-        return jsonResult({ wallets: await listKeystores() });
-      } catch (e) {
-        return jsonResult({ error: errText(e) });
-      }
-    },
+    async () => toolResult(async () => ({ wallets: await listKeystores() })),
   );
 
   server.registerTool(
@@ -157,26 +168,24 @@ function buildServer(): McpServer {
       },
       annotations: WRITE,
     },
-    async ({ pool, wallet, network }) => {
-      try {
+    async ({ pool, wallet, network }) =>
+      toolResult(async () => {
         const passphrase = requirePassphrase();
         const { net, ton, sdk } = await sdkFor(network);
         const cfg = await loadZkrConfig();
         const pools = await Factory.listPools(sdk, net.factoryAddress);
-        const requestedPool = Address.parse(pool);
-        const target = pools.find((x) =>
-          Address.parse(x.poolAddress).equals(requestedPool));
+        const requestedPool = canonicalAddress(pool, "pool address");
+        const target = pools.find((entry) =>
+          sameAddress(entry.poolAddress, requestedPool));
         if (!target) {
-          return jsonResult({ error: `Pool ${pool} not found on ${net.network}.` });
+          throw new Error(`Pool ${pool} not found on ${net.network}.`);
         }
 
         const loaded = await unlockWallet({ name: wallet, passphrase });
         let userJettonWallet: string | undefined;
         if (target.kind === "jetton") {
           if (target.jettonWallet === null) {
-            return jsonResult({
-              error: "Jetton pool is not ready: its pool wallet is not bound.",
-            });
+            throw new Error("Jetton pool is not ready: its pool wallet is not bound.");
           }
           userJettonWallet = await resolveJettonWallet(
             ton,
@@ -197,7 +206,7 @@ function buildServer(): McpServer {
           const prep = await prepareDeposit(sdk, {
             kind: target.kind,
             poolAddress: target.poolAddress,
-            asset: target.kind === "ton" ? "TON" : target.jettonSymbol,
+            asset: notePoolAsset(target),
             denomination: target.denomination,
             userAddress: loaded.address,
             userJettonWallet,
@@ -232,7 +241,7 @@ function buildServer(): McpServer {
             bounce: target.kind === "jetton",
           }),
         });
-        return jsonResult({
+        return {
           ok: true,
           pool: target.poolAddress,
           from: loaded.address,
@@ -240,14 +249,8 @@ function buildServer(): McpServer {
           expectedLeafIndex: result.expectedLeafIndex,
           journalPath: submission.journalPath,
           payloadHash: submission.payloadHash,
-        });
-      } catch (e) {
-        if (isPendingDepositError(e)) {
-          return jsonResult(pendingDepositErrorPayload(e));
-        }
-        return jsonResult({ error: errText(e) });
-      }
-    },
+        };
+      }),
   );
 
   server.registerTool(
@@ -255,7 +258,7 @@ function buildServer(): McpServer {
     {
       title: "Withdraw from a ZKResistor pool",
       description:
-        "Withdraw using a secret note, sending the denomination to a recipient. The broadcaster can receive up to the 0.30 TON earmark, net of transaction and action costs. Requires ZKR_PASSPHRASE in the server environment.",
+        "Withdraw using a secret note, sending the denomination to a recipient. The broadcaster can receive up to the 0.30 GRAM earmark, net of transaction and action costs. Requires ZKR_PASSPHRASE in the server environment.",
       inputSchema: {
         note: z.string().describe("Secret note from a prior deposit."),
         to: z.string().describe("Recipient address (EQ...)."),
@@ -263,7 +266,7 @@ function buildServer(): McpServer {
         pool: z
           .string()
           .optional()
-          .describe("Pool address. Auto-resolved from the note when omitted."),
+          .describe("Optional assertion of the pool address bound to the note."),
         queryId: z
           .string()
           .optional()
@@ -272,42 +275,19 @@ function buildServer(): McpServer {
       },
       annotations: WRITE,
     },
-    async ({ note, to, wallet, pool, queryId, network }) => {
-      try {
+    async ({ note, to, wallet, pool, queryId, network }) =>
+      toolResult(async () => {
         const passphrase = requirePassphrase();
         const parsed = parseNote(note);
-        if (!parsed) return jsonResult({ error: "Invalid note format." });
+        if (!parsed) throw new Error("Invalid note format.");
         const { net, ton, sdk } = await sdkFor(network);
         const cfg = await loadZkrConfig();
-
-        let poolAddress = pool ?? parsed.poolAddress;
-        if (!poolAddress) {
-          const all = await Factory.listPools(sdk, net.factoryAddress);
-          const matches = all.filter((x) =>
-            parsed.asset === "TON"
-              ? x.kind === "ton" && x.denomination === parsed.denominationUnits
-              : x.kind === "jetton" &&
-                x.jettonSymbol === parsed.asset &&
-                x.denomination === parsed.denominationUnits,
-          );
-          if (matches.length !== 1) {
-            return jsonResult({
-              error:
-                matches.length === 0
-                  ? "No pool matches the note."
-                  : "Multiple pools match the note; pass 'pool' explicitly.",
-            });
-          }
-          poolAddress = matches[0]!.poolAddress;
-        }
-        poolAddress = Address.parse(poolAddress).toString({
-          urlSafe: true,
-          bounceable: true,
-        });
+        const recipient = canonicalRecipientAddress(to);
+        const { poolAddress, kind } = notePoolBinding(parsed, pool);
+        const clientQueryId = optionalUint64(queryId);
 
         const loaded = await unlockWallet({ name: wallet, passphrase });
         const poseidon2 = await loadPoseidon2(cfg.hasherWasm);
-        const kind = parsed.poolKind ?? (parsed.asset === "TON" ? "ton" : "jetton");
         const plan = await withPersistentState({
           client: sdk,
           network: net.network,
@@ -324,8 +304,8 @@ function buildServer(): McpServer {
             kind,
             note: parsed,
             poolAddress,
-            recipientAddress: to,
-            queryId: queryId ? BigInt(queryId) : undefined,
+            recipientAddress: recipient,
+            queryId: clientQueryId,
             stateProvider: persistent.provider,
             poseidon2,
             withdrawProver,
@@ -343,19 +323,16 @@ function buildServer(): McpServer {
           body: plan.message.payload,
           bounce: true,
         });
-        return jsonResult({
+        return {
           ok: true,
           pool: poolAddress,
-          recipient: to,
+          recipient,
           broadcaster: loaded.address,
           queryId: plan.queryId,
           nullifierHash:
             "0x" + plan.nullifierHash.toString(16).padStart(64, "0"),
-        });
-      } catch (e) {
-        return jsonResult({ error: errText(e) });
-      }
-    },
+        };
+      }),
   );
 
   server.registerTool(
@@ -363,7 +340,7 @@ function buildServer(): McpServer {
     {
       title: "Create a ZKResistor jetton pool",
       description:
-        "Start a new Jetton pool creation for a (jetton master, denomination) pair. Sends 0.55 TON by default; the protocol minimum is 0.45 TON. The result remains pending until wallet binding and Factory activation complete. Requires ZKR_PASSPHRASE in the server environment.",
+        "Start a new Jetton pool creation for a (jetton master, denomination) pair. Sends 0.55 GRAM by default; the protocol minimum is 0.45 GRAM. The result remains pending until wallet binding and Factory activation complete. Requires ZKR_PASSPHRASE in the server environment.",
       inputSchema: {
         jetton: z.string().describe("Jetton master address (EQ...)."),
         denomination: z
@@ -374,15 +351,16 @@ function buildServer(): McpServer {
       },
       annotations: WRITE,
     },
-    async ({ jetton, denomination, wallet, network }) => {
-      try {
+    async ({ jetton, denomination, wallet, network }) =>
+      toolResult(async () => {
         const passphrase = requirePassphrase();
-        const denom = BigInt(denomination);
+        const jettonMaster = canonicalAddress(jetton, "jetton master");
+        const denom = positiveBigInt(denomination, "Denomination");
         const { net, ton, sdk } = await sdkFor(network);
         const plan = await planJettonPoolCreation(
           sdk,
           net.factoryAddress,
-          jetton,
+          jettonMaster,
           denom,
         );
         const expectedPool = plan.poolAddress;
@@ -393,18 +371,15 @@ function buildServer(): McpServer {
           value: msg.value,
           body: msg.payload,
         });
-        return jsonResult({
+        return {
           ok: true,
           poolAddress: expectedPool,
-          jettonMaster: jetton,
+          jettonMaster,
           denomination: denom,
           deployer: loaded.address,
           status: "broadcast_pending_activation",
-        });
-      } catch (e) {
-        return jsonResult({ error: errText(e) });
-      }
-    },
+        };
+      }),
   );
 
   server.registerTool(
@@ -412,7 +387,7 @@ function buildServer(): McpServer {
     {
       title: "Activate a ZKResistor Jetton pool",
       description:
-        "Trigger or retry a Jetton pool's TEP-89 wallet binding and Factory activation. Sends up to 0.06 TON, or 0.02 TON for a confirmation retry once bound. Requires ZKR_PASSPHRASE in the server environment.",
+        "Trigger or retry a Jetton pool's TEP-89 wallet binding and Factory activation. Sends up to 0.06 GRAM, or 0.02 GRAM for a confirmation retry once bound. Requires ZKR_PASSPHRASE in the server environment.",
       inputSchema: {
         pool: z.string().describe("Jetton pool address (EQ...)."),
         wallet: z.string().describe("Name of a stored wallet to pay from."),
@@ -420,13 +395,10 @@ function buildServer(): McpServer {
       },
       annotations: WRITE,
     },
-    async ({ pool, wallet, network }) => {
-      try {
+    async ({ pool, wallet, network }) =>
+      toolResult(async () => {
         const passphrase = requirePassphrase();
-        const poolAddress = Address.parse(pool).toString({
-          urlSafe: true,
-          bounceable: true,
-        });
+        const poolAddress = canonicalAddress(pool, "pool address");
         const { net, ton, sdk } = await sdkFor(network);
         const plan = await planPoolActivation(
           sdk,
@@ -434,14 +406,17 @@ function buildServer(): McpServer {
           poolAddress,
         );
         if (plan.status === "active") {
-          return jsonResult({
+          return {
             ok: true,
             network: net.network,
             poolAddress,
             status: "already_active",
-          });
+          };
         }
-        const msg = plan.message!;
+        if (plan.message === null) {
+          throw new Error("Pending Pool activation has no message");
+        }
+        const msg = plan.message;
         const loaded = await unlockWallet({ name: wallet, passphrase });
         await sendOne(ton, loaded, {
           to: msg.address,
@@ -449,39 +424,41 @@ function buildServer(): McpServer {
           body: msg.payload,
           bounce: true,
         });
-        return jsonResult({
+        return {
           ok: true,
           network: net.network,
           poolAddress,
           broadcaster: loaded.address,
           queryId: msg.queryId,
           status: "broadcast",
-        });
-      } catch (e) {
-        return jsonResult({ error: errText(e) });
-      }
-    },
+        };
+      }),
   );
 
   server.registerTool(
     "create_ton_pool",
     {
-      title: "Create a ZKResistor TON pool",
+      title: "Create a ZKResistor GRAM pool",
       description:
-        "Start a native-TON pool creation for a whitelisted denomination (10/100/1000/10000 TON). Sends 0.55 TON by default; the protocol minimum is 0.45 TON. Requires ZKR_PASSPHRASE in the server environment.",
+        "Start a native GRAM pool creation for a whitelisted denomination (10/100/1000/10000 GRAM). Sends 0.55 GRAM by default; the protocol minimum is 0.45 GRAM. Requires ZKR_PASSPHRASE in the server environment.",
       inputSchema: {
         denomination: z
           .string()
-          .describe("Denomination in nanoTON (a whitelisted value)."),
+          .describe("Denomination in nanograms (a whitelisted value)."),
         wallet: z.string().describe("Name of a stored wallet to pay from."),
         network: networkArg,
       },
       annotations: WRITE,
     },
-    async ({ denomination, wallet, network }) => {
-      try {
+    async ({ denomination, wallet, network }) =>
+      toolResult(async () => {
         const passphrase = requirePassphrase();
-        const denom = BigInt(denomination);
+        const denom = positiveBigInt(denomination, "Denomination");
+        if (!TON_POOL_DENOMINATIONS.some((allowed) => allowed === denom)) {
+          throw new Error(
+            `Denomination ${denom} is not allowed. Expected one of: ${TON_POOL_DENOMINATIONS.join(", ")}.`,
+          );
+        }
         const { net, ton, sdk } = await sdkFor(network);
         const plan = await planTonPoolCreation(sdk, net.factoryAddress, denom);
         const expectedPool = plan.poolAddress;
@@ -492,17 +469,14 @@ function buildServer(): McpServer {
           value: msg.value,
           body: msg.payload,
         });
-        return jsonResult({
+        return {
           ok: true,
           poolAddress: expectedPool,
           denomination: denom,
           deployer: loaded.address,
           status: "broadcast",
-        });
-      } catch (e) {
-        return jsonResult({ error: errText(e) });
-      }
-    },
+        };
+      }),
   );
 
   return server;

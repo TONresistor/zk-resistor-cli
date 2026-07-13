@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Post-build smoke test. Runs the built CLI through help + JSON paths and
-# verifies the expected output. CI runs this after `npm run build`.
 
 set -euo pipefail
 
@@ -47,8 +45,8 @@ assert_json_field() {
 
 echo "smoke: zkr --version"
 out=$(run --version)
-[ "$out" = "2.0.0" ] || { echo "  ✗ version mismatch: '$out'" >&2; exit 1; }
-echo "  ✓ 2.0.0"
+[ "$out" = "2.0.1" ] || { echo "  ✗ version mismatch: '$out'" >&2; exit 1; }
+echo "  ✓ 2.0.1"
 
 echo "smoke: zkr --help"
 out=$(run --help)
@@ -58,6 +56,12 @@ assert_contains "deposit" "$out"
 assert_contains "withdraw" "$out"
 assert_not_contains "recovery" "$out"
 echo "  ✓ all top-level commands present"
+
+echo "smoke: zkr without TTY"
+out=$(run </dev/null)
+assert_contains "wallet" "$out"
+assert_contains "pools" "$out"
+echo "  ✓ non-interactive invocation prints help"
 
 echo "smoke: zkr wallet --help"
 out=$(run wallet --help)
@@ -93,9 +97,7 @@ assert_json_field "success" "false" "$out"
 assert_contains 'Unknown command `recovery`' "$out"
 echo "  ✓ removed recovery command is rejected"
 
-# JSON error envelope check (no network needed — wallet not found returns CliError)
 echo "smoke: zkr wallet show <nonexistent> --json"
-# Force a temp HOME so we don't accidentally read a real wallet.
 TMP=$(mktemp -d)
 HOME="$TMP" out=$(run wallet show __nonexistent_test_wallet__ --json 2>&1 || true)
 assert_json_field "success" "false" "$out"

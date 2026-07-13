@@ -61,13 +61,13 @@ export async function planTonPoolCreation(
     Factory.expectedTonPoolAddress(client, factoryAddress, denomination),
   ]);
   if (pending) {
-    throw new CliError("Creation of this TON Pool is already in flight.", {
+    throw new CliError("Creation of this GRAM Pool is already in flight.", {
       code: "POOL_CREATION_PENDING",
       details: { pool: expected },
     });
   }
   if (existing !== null) {
-    throw new CliError("This TON denomination already has a Pool.", {
+    throw new CliError("This GRAM denomination already has a Pool.", {
       code: "POOL_ALREADY_EXISTS",
       details: { pool: existing },
     });
